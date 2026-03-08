@@ -13,18 +13,22 @@ Macroa Pulse is a Python library for proactive AI agent cognition. It runs entir
 
 ## Installation Methods
 
-<Steps>
-  <Step title="Install with pip">
-    Install the latest version from PyPI:
+<Note>
+  Macroa Pulse is not yet published to PyPI. Install from source until a release is available.
+</Note>
 
+<Steps>
+  <Step title="Clone and install from source">
     ```bash
-    pip install macroa-pulse
+    git clone https://github.com/aniolowie/Macroa-Pulse.git
+    cd Macroa-Pulse
+    pip install -e .
     ```
 
-    This will install Macroa Pulse along with its core dependencies:
-    - `torch>=2.0` - PyTorch for LSTM/TCN models
-    - `watchdog>=3.0` - Filesystem event detection
-    - `numpy>=1.24` - Feature vector construction
+    This installs the package in editable mode along with its core dependencies:
+    - `torch>=2.0` — PyTorch for LSTM/TCN models
+    - `watchdog>=3.0` — Filesystem event detection
+    - `numpy>=1.24` — Feature vector construction
   </Step>
 
   <Step title="Verify installation">
@@ -35,24 +39,30 @@ Macroa Pulse is a Python library for proactive AI agent cognition. It runs entir
 
     print("Macroa Pulse installed successfully!")
     ```
+
+    You can also check the CLI:
+
+    ```bash
+    macroa-pulse --help
+    ```
   </Step>
 </Steps>
 
-### Alternative: Poetry
+### Install with an LLM provider
 
-If you use Poetry for dependency management:
+To use the CLI with an LLM provider for escalation responses, install the optional dependency:
 
-```bash
-poetry add macroa-pulse
+<CodeGroup>
+```bash Anthropic (Claude)
+pip install -e ".[anthropic]"
+export ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### Alternative: Pipenv
-
-If you use Pipenv:
-
-```bash
-pipenv install macroa-pulse
+```bash OpenAI (default)
+pip install -e .
+export OPENAI_API_KEY=sk-...
 ```
+</CodeGroup>
 
 ## Development Installation
 

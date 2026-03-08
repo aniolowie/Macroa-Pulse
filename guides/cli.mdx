@@ -1,0 +1,110 @@
+---
+title: CLI Reference
+description: Run Macroa Pulse as a standalone process from the command line
+---
+
+The `macroa-pulse` CLI lets you run Pulse without writing any Python. Provide a directory to watch and a fingerprint JSON file — Pulse handles the rest, calling an LLM when an escalation fires.
+
+## Basic usage
+
+```bash
+macroa-pulse --watch <DIR> --module <FINGERPRINT.json>
+```
+
+## Options
+
+| Flag | Required | Default | Description |
+|------|----------|---------|-------------|
+| `--watch DIR` | No (repeatable) | — | Directory to monitor. Can be passed multiple times. |
+| `--module PATH` | **Yes** | — | Path to a JSON fingerprint file. |
+| `--provider` | No | `openai` | LLM provider for escalation responses. One of `openai`, `anthropic`. |
+| `--model MODEL` | No | Provider default | Override the LLM model. |
+| `--save-dir PATH` | No | `~/.macroa/pulse` | Directory where model weights are persisted. |
+
+## Provider defaults
+
+| Provider | Default model | API key env var |
+|----------|--------------|-----------------|
+| `openai` | `gpt-4o-mini` | `OPENAI_API_KEY` |
+| `anthropic` | `claude-haiku-4-5` | `ANTHROPIC_API_KEY` |
+
+## Examples
+
+**Watch one directory with OpenAI (default):**
+
+```bash
+export OPENAI_API_KEY=sk-...
+macroa-pulse --watch ~/Downloads --module my-fingerprint.json
+```
+
+**Watch multiple directories with Anthropic Claude:**
+
+```bash
+export ANTHROPIC_API_KEY=sk-ant-...
+macroa-pulse \
+  --watch ~/Downloads \
+  --watch ~/Documents \
+  --module my-fingerprint.json \
+  --provider anthropic \
+  --model claude-sonnet-4-6
+```
+
+**Persist models to a custom path:**
+
+```bash
+macroa-pulse \
+  --watch ~/projects \
+  --module dev-fingerprint.json \
+  --save-dir ~/.my-agent/pulse-models
+```
+
+## Fingerprint file
+
+The `--module` flag takes a path to a JSON file that defines the module's signal fingerprint. Example `fingerprint.json`:
+
+```json
+{
+  "module_id": "document-watcher",
+  "cluster": "documents",
+  "version": "1.0",
+  "question_template": "A new file appeared at {location}. Is this relevant to the user's current work?",
+  "default_threshold": 0.65,
+  "signal_priors": {
+    "filesystem": {
+      "watch_directories": ["~/Downloads", "~/Documents"],
+      "relevant_extensions": [".pdf", ".docx", ".pptx", ".txt"],
+      "irrelevant_extensions": [".tmp", ".log", ".exe", ".zip"]
+    },
+    "time": {
+      "active_hours": [8, 22],
+      "active_days": [0, 1, 2, 3, 4],
+      "typical_interval_hours": 24
+    }
+  }
+}
+```
+
+<Note>
+  The `question_template` must contain `{location}` — this is substituted with the path or identifier of the detected signal when the agent is woken.
+</Note>
+
+See [Module Fingerprints](/architecture/module-fingerprints) for the full schema reference.
+
+## How it works
+
+When the CLI starts, it:
+
+1. Loads the fingerprint JSON and registers the module with `PulseRegistry`
+2. Starts all three Pulse layers (Retina, Limbic, Prefrontal)
+3. On escalation, calls the configured LLM with the scoped question
+4. Persists model weights to `--save-dir` on exit (Ctrl+C)
+
+The process blocks until interrupted. Model weights accumulate over time, so the longer Pulse runs the better it adapts to your actual usage patterns.
+
+## Stopping Pulse
+
+Press `Ctrl+C`. Pulse will gracefully stop all background threads and save model weights before exiting:
+
+```
+Pulse stopped.
+```

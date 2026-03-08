@@ -139,7 +139,7 @@ A simple agent that monitors a directory for new `.txt` files and escalates when
         # Record activation and get an ID
         activation_id = registry.record_activation(
             decision.module_id,
-            decision.triggering_events
+            decision.window
         )
         
         # Later, after the agent acts, provide feedback

@@ -41,5 +41,6 @@ anthropic = [
 
 [project.urls]
 Homepage = "https://github.com/aniolowie/Macroa-Pulse"
+Documentation = "https://pulse.macroa.org/docs"
 Repository = "https://github.com/aniolowie/Macroa-Pulse"
 "Bug Tracker" = "https://github.com/aniolowie/Macroa-Pulse/issues"

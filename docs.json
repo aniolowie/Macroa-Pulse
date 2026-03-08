@@ -2,6 +2,7 @@
   "$schema": "https://mintlify.com/docs.json",
   "name": "Macroa Pulse",
   "theme": "aspen",
+  "url": "https://pulse.macroa.org",
   "colors": {
     "primary": "#6366F1",
     "light": "#818CF8",
@@ -53,6 +54,7 @@
           {
             "group": "Guides",
             "pages": [
+              "guides/cli",
               "guides/registering-modules",
               "guides/training-models",
               "guides/monitoring-signals",

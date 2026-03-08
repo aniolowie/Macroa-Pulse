@@ -160,7 +160,7 @@ class AgentKernel:
             context={
                 "module_id": decision.module_id,
                 "confidence": decision.confidence,
-                "events": decision.triggering_events
+                "events": decision.window
             }
         )
         
@@ -431,7 +431,7 @@ class EscalationDecision:
     module_id: str
     question: str
     confidence: float
-    triggering_events: list[SignalEvent]
+    window: list[SignalEvent]
     should_escalate: bool
 ```
 </Accordion>

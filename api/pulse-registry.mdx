@@ -40,6 +40,10 @@ def __init__(
   Path where Limbic model weights will be persisted on `stop()`. If `None`, models are not saved.
 </ParamField>
 
+<ParamField path="auto_save_interval" type="int" default="10">
+  Number of escalations between automatic model weight saves. Saving happens in addition to the final save on `stop()`. Only applies when `model_save_path` is set.
+</ParamField>
+
 ## Module Registration
 
 ### register_module
