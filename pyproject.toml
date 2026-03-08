@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "macroa-pulse"
+version = "0.1.0"
+description = "Proactive cognition subsystem for AI agents — part of the Macroa platform"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Maciej", github = "aniolowie" }
+]
+keywords = ["ai", "agents", "proactive", "macroa", "pulse"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU Affero General Public License v3",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "watchdog>=3.0",
+    "numpy>=1.24",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+]
+
+[project.urls]
+Homepage = "https://github.com/aniolowie/Macroa-Pulse"
+Repository = "https://github.com/aniolowie/Macroa-Pulse"
+"Bug Tracker" = "https://github.com/aniolowie/Macroa-Pulse/issues"

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# PyTorch model weights (user-specific, never commit)
+pulse/models/*.pt
+pulse/models/*.pth
+
+# Training data (user-specific, never commit)
+*.db
+
+# Environment
+.env
+*.env
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
