@@ -8,6 +8,7 @@ Architecture: docs/ARCHITECTURE.md §Layer 2
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,6 +86,11 @@ class LimbicLayer:
         """
         model = ClusterModel()
         self._apply_cold_start_bias(model, fingerprint.slot_relevance_mask())
+        with torch.no_grad():
+            t = fingerprint.default_threshold
+            model.head.bias.data = torch.tensor(
+                [math.log(t / (1 - t + 1e-9))]
+            )
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
         self._registry[module_id] = _Entry(model=model, optimizer=optimizer)
 

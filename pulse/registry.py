@@ -40,9 +40,12 @@ class PulseRegistry:
         watch_dirs: list[str],
         threshold: float = 0.65,
         model_save_path: Optional[Path] = None,
+        auto_save_interval: int = 10,
     ) -> None:
         self._watch_dirs = list(watch_dirs)
         self._model_save_path = model_save_path
+        self._auto_save_interval = auto_save_interval
+        self._activation_count = 0
 
         self._signal_queue: queue.Queue = queue.Queue()
         self._bus = SignalBus()
@@ -150,6 +153,13 @@ class PulseRegistry:
             return
 
         activation_id = self.record_activation(module_id, window)
+
+        self._activation_count += 1
+        if (
+            self._activation_count % self._auto_save_interval == 0
+            and self._model_save_path is not None
+        ):
+            self._limbic.save(self._model_save_path)
 
         handler = self._escalation_handler
         if handler is not None:

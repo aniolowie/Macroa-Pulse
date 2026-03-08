@@ -100,12 +100,9 @@ class TrainingBuffer:
         Implicit feedback heuristic used when no explicit label arrives within
         the feedback timeout window.
 
-        TODO (kernel): The window is always non-empty (it is what triggered the
-        activation), so the branch below never returns 0.2. The real heuristic
-        must inspect whether the agent produced output, which only the kernel
-        knows. Revisit this method once the kernel passes agent result metadata
-        into ActivationRecord.
+        Returns 0.5 (neutral) because the window is always non-empty (it is
+        what triggered the activation), making the old 0.8/0.2 heuristic
+        always wrong. Neutral labels prevent corrupting the model before the
+        kernel exists to supply real outcome metadata.
         """
-        if record.window:
-            return _IMPLICIT_LABEL_WITH_OUTPUT
-        return _IMPLICIT_LABEL_NO_OUTPUT
+        return 0.5
