@@ -1,0 +1,60 @@
+{
+  "name": "Macroa-Pulse",
+  "logo": {
+    "dark": "/logo/dark.svg",
+    "light": "/logo/light.svg"
+  },
+  "colors": {
+    "primary": "#6366f1",
+    "light": "#818cf8",
+    "dark": "#4f46e5"
+  },
+  "topbarLinks": [
+    {
+      "name": "GitHub",
+      "url": "https://github.com/aniolowie/Macroa-Pulse"
+    }
+  ],
+  "navigation": [
+    {
+      "group": "Overview",
+      "pages": [
+        "docs/introduction",
+        "docs/how-it-works",
+        "docs/architecture"
+      ]
+    },
+    {
+      "group": "Getting Started",
+      "pages": [
+        "docs/quickstart",
+        "docs/installation",
+        "docs/first-module"
+      ]
+    },
+    {
+      "group": "Concepts",
+      "pages": [
+        "docs/retina",
+        "docs/limbic",
+        "docs/prefrontal",
+        "docs/registry"
+      ]
+    },
+    {
+      "group": "Reference",
+      "pages": [
+        "docs/fingerprint-format",
+        "docs/cli-reference",
+        "docs/python-api"
+      ]
+    },
+    {
+      "group": "Contributing",
+      "pages": [
+        "docs/contributing",
+        "docs/roadmap"
+      ]
+    }
+  ]
+}

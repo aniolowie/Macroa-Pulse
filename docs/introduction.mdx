@@ -1,0 +1,74 @@
+---
+title: Introduction
+description: "Proactive cognition for AI agents, without cron jobs, webhooks, or LLM polling."
+---
+
+Every AI agent framework today is reactive. An agent acts because something triggered it: a webhook, a schedule, or a user prompt. Remove the trigger, and the agent does nothing. Building a genuinely useful AI assistant requires anticipating every possible situation and writing an explicit trigger for it.
+
+That is not how human cognition works. We notice things.
+
+**Macroa-Pulse** is a standalone Python subsystem that gives AI agents a "default mode network." It is a three-layer hierarchical perception system that runs entirely locally, noticing when something is worth attention and acting on it.
+
+## The Three Layers
+
+The Pulse is inspired by the brain's perceptual architecture:
+
+<CardGroup cols={3}>
+  <Card title="1. Retina" icon="eye">
+    Deterministic change detection across filesystems, memory, and time. Runs continuously at near-zero cost.
+  </Card>
+  <Card title="2. Limbic Filter" icon="brain">
+    Tiny per-module neural networks (LSTMs) that score signals for relevance. Runs in <5ms on CPU.
+  </Card>
+  <Card title="3. Prefrontal" icon="message-question">
+    Template-based question formation. Wakes the agent with a specific, scoped question.
+  </Card>
+</CardGroup>
+
+In normal operation, the Pulse runs entirely on local compute with **zero LLM API calls**. The agent is only invoked when all three layers agree something is worth attention, and it wakes up with a specific question, not a blank slate.
+
+## Quick Start
+
+Get started with Pulse in three steps:
+
+<Steps>
+  <Step title="Install">
+    Install the package via pip:
+    ```bash
+    pip install macroa-pulse
+    ```
+  </Step>
+  <Step title="Create a Fingerprint">
+    Define what your agent cares about in a JSON file:
+    ```json
+    {
+      "module_id": "pdf_reader",
+      "question_template": "I noticed a new PDF at {location}. Should I summarize it?",
+      "default_threshold": 0.65,
+      "signal_priors": {
+        "filesystem": {
+          "watch_dirs": ["~/Downloads"],
+          "relevant_extensions": [".pdf"]
+        }
+      }
+    }
+    ```
+  </Step>
+  <Step title="Run the Watcher">
+    Start the Pulse CLI to watch your environment:
+    ```bash
+    macroa-pulse watch ~/Downloads --module fingerprint.json
+    ```
+  </Step>
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="How it Works" icon="diagram-project" href="/docs/how-it-works">
+    Understand the signal flow from environment to agent.
+  </Card>
+  <Card title="First Module Tutorial" icon="graduation-cap" href="/docs/first-module">
+    Build a complete working module from scratch.
+  </Card>
+</CardGroup>
