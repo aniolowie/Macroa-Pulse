@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
-# Copyright (C) 2025 Maciej (aniolowie) — https://github.com/aniolowie/Macroa-Pulse
+# Copyright (C) 2025 Maciej (aniolowie) , https://github.com/aniolowie/Macroa-Pulse
 
 """
-Training — see docs/ARCHITECTURE.md
+Training , see docs/ARCHITECTURE.md
 """

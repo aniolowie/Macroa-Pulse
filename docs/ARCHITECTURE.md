@@ -1,12 +1,12 @@
 # Pulse: Architecture Guide
-### Macroa — Build Document 1 of 5
+### Macroa , Build Document 1 of 5
 **Status:** Pre-implementation specification. Read this before writing any code.
 
 ---
 
 ## What This Document Is
 
-This is the implementation specification for the **Pulse** — the proactive cognition subsystem of Macroa. It is written for Claude Code. Every section is a direct implementation instruction. Do not deviate from the architecture described here without updating this document first.
+This is the implementation specification for the **Pulse** , the proactive cognition subsystem of Macroa. It is written for Claude Code. Every section is a direct implementation instruction. Do not deviate from the architecture described here without updating this document first.
 
 The Pulse is built **before the kernel, before the SDK, before the shell.** It is the first thing built because it is what makes Macroa different from every other agent framework. Without the Pulse, Macroa is reactive. With the Pulse, it is proactive.
 
@@ -16,7 +16,7 @@ The Pulse is built **before the kernel, before the SDK, before the shell.** It i
 
 > **AI is used only where no deterministic process can do the job. Everything else is infrastructure.**
 
-The Pulse embodies this principle recursively: it achieves proactive behaviour using zero LLM calls in normal operation. Layer 1 is deterministic. Layer 2 is a tiny local neural network. Layer 3 uses string templates. The LLM is only called when all three layers cannot resolve ambiguity — which should be rare.
+The Pulse embodies this principle recursively: it achieves proactive behaviour using zero LLM calls in normal operation. Layer 1 is deterministic. Layer 2 is a tiny local neural network. Layer 3 uses string templates. The LLM is only called when all three layers cannot resolve ambiguity , which should be rare.
 
 ---
 
@@ -119,7 +119,7 @@ class SignalEvent:
 **Time tick features:**
 ```python
 {
-    "hour_sin": 0.866,   # sin(2π * hour / 24) — cyclical encoding
+    "hour_sin": 0.866,   # sin(2π * hour / 24) , cyclical encoding
     "hour_cos": 0.5,
     "dow_sin": 0.782,    # sin(2π * day_of_week / 7)
     "dow_cos": 0.623,
@@ -158,7 +158,7 @@ Each module cluster has its own independent model. Models run in parallel. No mo
 
 ### Cold Start: Module Fingerprint
 
-When a module registers with the Pulse, it provides a **signal fingerprint** — a JSON structure that describes what signals are associated with its relevance. This fingerprint is used to initialise the cluster model's weights with a meaningful prior, so it is not random on day one.
+When a module registers with the Pulse, it provides a **signal fingerprint** , a JSON structure that describes what signals are associated with its relevance. This fingerprint is used to initialise the cluster model's weights with a meaningful prior, so it is not random on day one.
 
 **Signal fingerprint format:**
 
@@ -192,7 +192,7 @@ When a module registers with the Pulse, it provides a **signal fingerprint** —
 
 ### Cluster Assignment
 
-Modules are assigned to clusters based on their declared `cluster` field in the fingerprint. Multiple modules can share a cluster (e.g., "homework-agent" and "notes-agent" both belong to "academic"). When two modules share a cluster, they share a cluster model — the model fires for the cluster, and Layer 3 determines which specific module is relevant.
+Modules are assigned to clusters based on their declared `cluster` field in the fingerprint. Multiple modules can share a cluster (e.g., "homework-agent" and "notes-agent" both belong to "academic"). When two modules share a cluster, they share a cluster model , the model fires for the cluster, and Layer 3 determines which specific module is relevant.
 
 ### Output: `RelevanceScore`
 
@@ -220,12 +220,12 @@ Training data is stored locally in `~/.macroa/pulse/training_data.db` (SQLite). 
 
 ### Responsibility
 
-Take a `RelevanceScore` above threshold and produce a `ScopedQuestion` — a specific, focused question for the agent. The agent wakes up with this question and does not need to search through all modules.
+Take a `RelevanceScore` above threshold and produce a `ScopedQuestion` , a specific, focused question for the agent. The agent wakes up with this question and does not need to search through all modules.
 
 ### How It Works
 
 1. Look up the cluster's registered modules and their question templates.
-2. Identify which module's fingerprint best matches the triggering events (simple rule-based matching — no LLM).
+2. Identify which module's fingerprint best matches the triggering events (simple rule-based matching , no LLM).
 3. Interpolate the question template with the specific signal details.
 4. Emit a `ScopedQuestion` to the kernel signal bus.
 
@@ -293,14 +293,14 @@ No LLM API calls. No network requests. No external services.
 
 Build in this exact order. Do not skip ahead.
 
-1. `retina.py` — implement `SignalEvent`, filesystem watcher, time tick. Test with a simple script that prints events.
-2. `fingerprint.py` — implement fingerprint parsing and validation. Test with the example fingerprint above.
-3. `bus.py` — implement the thread-safe queue between layers.
-4. `limbic.py` — implement the LSTM model, cluster registry, and inference. Test with synthetic data from the fingerprint.
-5. `training.py` — implement the online learning loop and SQLite storage.
-6. `prefrontal.py` — implement template interpolation and question formation.
-7. `registry.py` — implement module registration and cluster assignment.
-8. `__init__.py` — wire all layers together and expose `Pulse.start()`, `Pulse.register_module()`, `Pulse.subscribe()`.
+1. `retina.py` , implement `SignalEvent`, filesystem watcher, time tick. Test with a simple script that prints events.
+2. `fingerprint.py` , implement fingerprint parsing and validation. Test with the example fingerprint above.
+3. `bus.py` , implement the thread-safe queue between layers.
+4. `limbic.py` , implement the LSTM model, cluster registry, and inference. Test with synthetic data from the fingerprint.
+5. `training.py` , implement the online learning loop and SQLite storage.
+6. `prefrontal.py` , implement template interpolation and question formation.
+7. `registry.py` , implement module registration and cluster assignment.
+8. `__init__.py` , wire all layers together and expose `Pulse.start()`, `Pulse.register_module()`, `Pulse.subscribe()`.
 
 ---
 
