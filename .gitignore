@@ -24,3 +24,6 @@ pulse/models/*.pth
 # IDE
 .vscode/
 .idea/
+
+# Claude Code context (local only)
+CLAUDE.md
