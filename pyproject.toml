@@ -39,6 +39,9 @@ anthropic = [
     "anthropic>=0.25",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["pulse"]
+
 [project.urls]
 Homepage = "https://github.com/aniolowie/Macroa-Pulse"
 Documentation = "https://pulse.macroa.org/docs"
