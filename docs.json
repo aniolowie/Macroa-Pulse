@@ -54,6 +54,7 @@
           {
             "group": "Guides",
             "pages": [
+              "guides/venv-setup",
               "guides/cli",
               "guides/registering-modules",
               "guides/training-models",

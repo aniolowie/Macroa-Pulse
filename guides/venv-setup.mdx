@@ -1,0 +1,128 @@
+---
+title: Virtual Environment Setup
+description: How to properly isolate your Macroa Pulse installation using a Python virtual environment
+---
+
+Using a virtual environment keeps Macroa Pulse and its dependencies isolated from your system Python and other projects. This prevents version conflicts and makes it easy to reproduce your setup.
+
+## Why Use a Virtual Environment?
+
+Macroa Pulse depends on PyTorch, watchdog, and numpy. Installing these globally can conflict with other projects that require different versions. A virtual environment gives each project its own isolated package space.
+
+## Creating and Activating the Environment
+
+<Steps>
+  <Step title="Create the virtual environment">
+    From the root of the `Macroa-Pulse` repository (or your project directory), run:
+
+    ```bash
+    python3 -m venv .venv
+    ```
+
+    This creates a `.venv/` directory containing a self-contained Python installation.
+
+    <Tip>
+      Using `.venv` as the name is a widely adopted convention. Most editors (VS Code, PyCharm) auto-detect it.
+    </Tip>
+  </Step>
+
+  <Step title="Activate the environment">
+    <CodeGroup>
+    ```bash macOS / Linux
+    source .venv/bin/activate
+    ```
+
+    ```bash Windows (Command Prompt)
+    .venv\Scripts\activate.bat
+    ```
+
+    ```bash Windows (PowerShell)
+    .venv\Scripts\Activate.ps1
+    ```
+    </CodeGroup>
+
+    Once active, your prompt will show `(.venv)` and `pip` / `python` will resolve to the isolated environment.
+  </Step>
+
+  <Step title="Install Macroa Pulse">
+    With the environment active, install from source in editable mode:
+
+    ```bash
+    pip install -e .
+    ```
+
+    To include the Anthropic provider for CLI escalation responses:
+
+    ```bash
+    pip install -e ".[anthropic]"
+    ```
+
+    To include development dependencies for running tests:
+
+    ```bash
+    pip install -e ".[dev]"
+    ```
+  </Step>
+
+  <Step title="Verify the installation">
+    ```bash
+    python -c "from pulse import PulseRegistry; print('OK')"
+    macroa-pulse --help
+    ```
+
+    Both commands should succeed without errors.
+  </Step>
+</Steps>
+
+## Deactivating the Environment
+
+When you are done working, deactivate the environment to return to your system Python:
+
+```bash
+deactivate
+```
+
+## Keeping the Environment Out of Git
+
+Add `.venv/` to your `.gitignore` so the environment is never committed:
+
+```bash
+echo ".venv/" >> .gitignore
+```
+
+<Note>
+  The `.venv/` directory can always be recreated from `pyproject.toml`. Never commit it — it contains platform-specific binaries and can be hundreds of megabytes.
+</Note>
+
+## Recreating the Environment
+
+If you need to start fresh (e.g., on a new machine or after a dependency update), delete the directory and repeat the steps above:
+
+```bash
+rm -rf .venv
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+```
+
+## Checking Your Python Version
+
+Macroa Pulse requires **Python 3.11 or higher**. Verify before creating the environment:
+
+```bash
+python3 --version
+```
+
+If your system Python is older, install a newer version via your package manager or [python.org](https://www.python.org/downloads/) and replace `python3` with the correct binary (e.g., `python3.12`).
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Full installation options including optional dependencies
+  </Card>
+
+  <Card title="Quickstart" icon="bolt" href="/quickstart">
+    Build your first proactive agent
+  </Card>
+</CardGroup>
