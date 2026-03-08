@@ -1,0 +1,216 @@
+---
+title: Retina
+description: Layer 1 deterministic event detection and time ticking
+---
+
+## Overview
+
+`Retina` is Layer 1 of the Pulse subsystem. It provides deterministic change detection with no inter-event state. It watches declared directories for filesystem events and emits a 60-second time tick with cyclically-encoded temporal features.
+
+All [SignalEvent](/api/signal-event) objects are placed on a caller-supplied thread-safe queue.
+
+## Import
+
+```python
+from pulse.retina import Retina
+```
+
+## Class Definition
+
+Defined in `pulse/retina.py:126`.
+
+## Constructor
+
+```python
+def __init__(
+    self,
+    watch_dirs: list[str],
+    signal_queue: queue.Queue,
+    get_minutes_since_activation: Optional[Callable[[], float]] = None,
+) -> None
+```
+
+<ParamField path="watch_dirs" type="list[str]" required>
+  Directories to monitor. Only these paths are watched, not the entire filesystem.
+  
+  Non-existent directories are silently skipped. Paths are expanded via `Path.expanduser().resolve()`.
+</ParamField>
+
+<ParamField path="signal_queue" type="queue.Queue" required>
+  Thread-safe queue that receives [SignalEvent](/api/signal-event) objects.
+</ParamField>
+
+<ParamField path="get_minutes_since_activation" type="Callable[[], float] | None" default="None">
+  Optional callable that returns the number of minutes elapsed since the last agent activation.
+  
+  When omitted, minutes are measured from `Retina.start()` time.
+</ParamField>
+
+## Class Attributes
+
+<ResponseField name="TICK_INTERVAL" type="int" default="60">
+  Time tick interval in seconds. A `"tick"` event is emitted every 60 seconds with temporal features.
+</ResponseField>
+
+## Methods
+
+### start
+
+```python
+def start(self) -> None
+```
+
+Start filesystem observer and time-tick thread. Non-blocking.
+
+Must be called before events will be produced.
+
+### stop
+
+```python
+def stop(self) -> None
+```
+
+Gracefully stop all background threads. Blocks until threads terminate.
+
+### add_watch_dir
+
+```python
+def add_watch_dir(self, path: str) -> None
+```
+
+Add a directory to the watchdog observer at runtime.
+
+Safe to call before or after `start()`. Silently skips paths that are already watched or do not exist on disk.
+
+<ParamField path="path" type="str" required>
+  Directory path to add. Will be expanded via `Path.expanduser().resolve()`.
+</ParamField>
+
+## Usage Example
+
+```python
+import queue
+import time
+from pulse.retina import Retina
+
+# 1. Create a queue to receive events
+signal_queue = queue.Queue()
+
+# 2. Create Retina instance
+retina = Retina(
+    watch_dirs=["/home/user/Documents", "/home/user/workspace"],
+    signal_queue=signal_queue,
+)
+
+# 3. Start monitoring
+retina.start()
+
+try:
+    # 4. Consume events
+    while True:
+        try:
+            event = signal_queue.get(timeout=5.0)
+            print(f"Event: {event.source} | {event.delta_type} | {event.location}")
+        except queue.Empty:
+            print("No events in the last 5 seconds")
+finally:
+    # 5. Clean shutdown
+    retina.stop()
+```
+
+## Dynamic Directory Addition
+
+```python
+import queue
+from pulse.retina import Retina
+
+signal_queue = queue.Queue()
+retina = Retina(watch_dirs=["/home/user/Documents"], signal_queue=signal_queue)
+retina.start()
+
+# Add a new directory at runtime
+retina.add_watch_dir("/home/user/Downloads")
+
+# New directory is now monitored without restarting
+```
+
+## Custom Activation Time Tracking
+
+```python
+import queue
+import time
+from pulse.retina import Retina
+
+last_activation_time = time.time()
+
+def get_minutes_since_activation() -> float:
+    return (time.time() - last_activation_time) / 60.0
+
+signal_queue = queue.Queue()
+retina = Retina(
+    watch_dirs=["/home/user/workspace"],
+    signal_queue=signal_queue,
+    get_minutes_since_activation=get_minutes_since_activation,
+)
+retina.start()
+
+# Time tick events will include accurate minutes_since_last_activation
+```
+
+## Event Types Produced
+
+### Filesystem Events
+
+Produced when files are created, modified, or deleted in watched directories:
+
+```python
+SignalEvent(
+    source="filesystem",
+    location="/home/user/Documents/report.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1678123456.0,
+    features={
+        "path": "/home/user/Documents/report.pdf",
+        "extension": ".pdf",
+        "size_bytes": 524288,
+        "directory_depth": 3,
+        "filename_tokens": ["report"],
+    },
+)
+```
+
+### Time Tick Events
+
+Produced every 60 seconds with cyclically-encoded temporal features:
+
+```python
+SignalEvent(
+    source="time",
+    location="tick",
+    delta_type="tick",
+    magnitude=1.0,
+    timestamp=1678123460.0,
+    features={
+        "hour_sin": 0.5,
+        "hour_cos": 0.866,
+        "dow_sin": 0.0,
+        "dow_cos": 1.0,
+        "minutes_since_last_activation": 12.5,
+    },
+)
+```
+
+## Implementation Details
+
+- Uses [watchdog](https://github.com/gorakhargosh/watchdog) for filesystem monitoring
+- Filesystem events are emitted immediately when detected
+- Time ticks run on a dedicated daemon thread
+- Directory changes (not file changes within directories) are ignored
+- Recursive watching is enabled for all specified directories
+
+## See Also
+
+- [SignalEvent](/api/signal-event) — Event structure produced by Retina
+- [SignalBus](/api/signal-bus) — Event distribution layer that consumes Retina output
+- [PulseRegistry](/api/pulse-registry) — Owns and coordinates Retina lifecycle

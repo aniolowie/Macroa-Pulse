@@ -1,0 +1,223 @@
+---
+title: Registering Modules
+description: Learn how to create signal fingerprints and register modules with Pulse
+---
+
+## Overview
+
+Every module that wants Pulse to monitor signals on its behalf must register with a **signal fingerprint**. This fingerprint tells Pulse what to watch (filesystem paths, memory namespaces, time patterns) and how to recognize relevant events.
+
+## What is a Signal Fingerprint?
+
+A signal fingerprint is a JSON structure that serves two purposes:
+
+1. **Runtime routing**: Tells the Retina (Layer 1) which directories and memory namespaces to watch
+2. **Cold-start prior**: Gives the Limbic Layer (Layer 2) meaningful initial weights so the model isn't random on day one
+
+<Steps>
+
+### Step 1: Define the fingerprint structure
+
+Create a dictionary with the required fields:
+
+```python
+fingerprint = {
+    "module_id": "homework-agent",
+    "cluster": "academic",
+    "version": "1.0",
+    "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?",
+    "default_threshold": 0.65,
+    "signal_priors": {
+        # Signal configuration (next step)
+    }
+}
+```
+
+**Required fields:**
+- `module_id`: Unique identifier for your module
+- `cluster`: Cluster name (modules sharing a cluster share a neural network model)
+- `version`: Fingerprint version for future compatibility
+- `question_template`: Template string for Layer 3, must contain `{location}` placeholder
+- `default_threshold`: Relevance score threshold (0.0–1.0) for triggering escalation
+
+### Step 2: Configure filesystem signals
+
+If your module cares about file changes, add filesystem priors:
+
+```python
+"signal_priors": {
+    "filesystem": {
+        "watch_directories": ["~/Downloads", "~/Documents"],
+        "relevant_extensions": [".pdf", ".docx", ".pptx"],
+        "irrelevant_extensions": [".exe", ".zip", ".mp3"]
+    }
+}
+```
+
+**Configuration:**
+- `watch_directories`: List of directories to monitor (supports `~` expansion)
+- `relevant_extensions`: File types that matter to your module (used for positive training examples)
+- `irrelevant_extensions`: File types to ignore (used for negative training examples)
+
+### Step 3: Configure memory signals (optional)
+
+If your module monitors the memory subsystem:
+
+```python
+"signal_priors": {
+    "memory": {
+        "watch_namespaces": ["/mem/homework/", "/mem/courses/"],
+        "high_relevance_keys": ["last_assignment", "due_date"]
+    }
+}
+```
+
+**Configuration:**
+- `watch_namespaces`: Memory namespace paths to monitor
+- `high_relevance_keys`: Specific keys that are particularly important
+
+### Step 4: Configure time patterns (optional)
+
+If your module has time-based relevance:
+
+```python
+"signal_priors": {
+    "time": {
+        "active_hours": [8, 22],
+        "active_days": [0, 1, 2, 3, 4],
+        "typical_interval_hours": 24
+    }
+}
+```
+
+**Configuration:**
+- `active_hours`: `[start, end]` hour range (0–23, inclusive)
+- `active_days`: List of active weekdays (0=Monday, 6=Sunday)
+- `typical_interval_hours`: Expected time between activations
+
+### Step 5: Register with PulseRegistry
+
+Once your fingerprint is complete, register it:
+
+```python
+from pulse import PulseRegistry
+
+# Initialize the registry (done by the kernel)
+pulse = PulseRegistry(
+    watch_dirs=[],  # Will be populated from fingerprints
+    threshold=0.65,
+    model_save_path=Path("~/.macroa/pulse/models")
+)
+
+# Register your module
+pulse.register_module("homework-agent", fingerprint)
+
+# Start the Pulse subsystem
+pulse.start()
+```
+
+The `register_module()` method:
+- Parses and validates the fingerprint (raises `ValueError` on invalid data)
+- Registers the module with the Limbic Layer
+- Adds watch directories to the Retina
+- Initializes the cluster model with meaningful priors
+
+</Steps>
+
+## Complete Example
+
+Here's a complete fingerprint for a homework tracking module:
+
+```python
+homework_fingerprint = {
+    "module_id": "homework-agent",
+    "cluster": "academic",
+    "version": "1.0",
+    "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?",
+    "default_threshold": 0.65,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Downloads", "~/Documents/School"],
+            "relevant_extensions": [".pdf", ".docx", ".pptx", ".txt"],
+            "irrelevant_extensions": [".exe", ".zip", ".mp3", ".jpg"]
+        },
+        "memory": {
+            "watch_namespaces": ["/mem/homework/", "/mem/courses/"],
+            "high_relevance_keys": ["assignment_name", "due_date", "last_checked"]
+        },
+        "time": {
+            "active_hours": [8, 23],
+            "active_days": [0, 1, 2, 3, 4, 6],  # Monday-Friday + Sunday
+            "typical_interval_hours": 24
+        }
+    }
+}
+
+# Register it
+pulse.register_module("homework-agent", homework_fingerprint)
+```
+
+## Cluster Assignment
+
+Multiple modules can share a cluster by using the same `cluster` field:
+
+```python
+# Both modules share the "academic" cluster
+pulse.register_module("homework-agent", {
+    "module_id": "homework-agent",
+    "cluster": "academic",
+    # ... rest of fingerprint
+})
+
+pulse.register_module("notes-agent", {
+    "module_id": "notes-agent",
+    "cluster": "academic",  # Same cluster!
+    # ... rest of fingerprint
+})
+```
+
+When modules share a cluster:
+- They share a single neural network model
+- The model fires for the entire cluster
+- Layer 3 (Prefrontal) determines which specific module is relevant
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="ValueError: Fingerprint missing required keys">
+Ensure your fingerprint includes all required fields: `module_id`, `cluster`, `version`, `question_template`, and `default_threshold`.
+</Accordion>
+
+<Accordion title="ValueError: question_template must contain '{location}' placeholder">
+Your question template must include the `{location}` placeholder. This gets replaced with the actual file path or namespace when an event triggers.
+
+Example: `"A new file appeared at {location}. Is this relevant?"`
+</Accordion>
+
+<Accordion title="ValueError: watch_directories must be a non-empty list">
+The `signal_priors.filesystem.watch_directories` field cannot be empty if you include a filesystem prior. Either add directories or remove the filesystem prior entirely.
+</Accordion>
+
+<Accordion title="ValueError: Extensions must start with '.'">
+File extensions must include the dot prefix:
+- Correct: `".pdf"`, `".docx"`
+- Incorrect: `"pdf"`, `"docx"`
+</Accordion>
+
+<Accordion title="Can I register modules after pulse.start()?">
+Yes! You can call `register_module()` before or after `start()`. When called after start, new watch directories are immediately added to the running filesystem observer.
+
+See `pulse/registry.py:68-79` for the implementation.
+</Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Training Models" icon="graduation-cap" href="/guides/training-models">
+Learn how online learning works and how to provide training labels
+</Card>
+<Card title="Monitoring Signals" icon="chart-line" href="/guides/monitoring-signals">
+Subscribe to events and debug signal flow through the layers
+</Card>
+</CardGroup>

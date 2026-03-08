@@ -1,0 +1,124 @@
+---
+title: The Macroa Platform
+description: How Pulse fits into the larger vision of an AI agent operating system
+icon: layer-group
+---
+
+## What is Macroa?
+
+Macroa is an **AI agent operating system** designed around a core principle:
+
+> AI is used only where no deterministic process can do the job. Everything else is infrastructure.
+
+While most AI agent frameworks focus on making LLMs easier to use, Macroa focuses on making LLMs **unnecessary** for as much of the agent lifecycle as possible—so that when AI is finally invoked, it's for the task it's uniquely suited to: reasoning about ambiguity.
+
+## Pulse's Role in Macroa
+
+Pulse is the **proactive cognition subsystem** of Macroa. It is the first component being built because it's what makes Macroa fundamentally different from reactive agent frameworks like LangChain, AutoGen, or CrewAI.
+
+### Why Build Pulse First?
+
+Every other agent framework is reactive. An agent acts because something triggered it—a user message, a webhook, a cron job. Remove the trigger, and the agent does nothing. Pulse eliminates this limitation by enabling agents to notice when something is worth attention and act on it autonomously.
+
+Without Pulse, Macroa would just be another reactive framework. With Pulse, it becomes proactive.
+
+## The Macroa Stack
+
+Macroa is composed of several interconnected components, with Pulse as the foundation:
+
+### 1. Pulse (Proactive Cognition)
+The hierarchical signal perception system that monitors the environment and produces scoped questions for the agent. Runs entirely on local compute with zero LLM calls in normal operation.
+
+**Status:** Active development (Proof of Concept)
+
+### 2. Kernel (Agent Runtime)
+The execution environment that manages agent lifecycle, capability-based security, and module coordination. The kernel receives scoped questions from Pulse and wakes the appropriate agent context.
+
+**Status:** Pre-implementation specification
+
+### 3. SDK (Module Development)
+The developer interface for building Macroa modules—reusable agent capabilities that register with Pulse and declare their signal fingerprints.
+
+**Status:** Pre-implementation specification
+
+### 4. Shell (User Interface)
+The command-line and natural language interface for interacting with agents, viewing Pulse activations, and providing feedback to improve model accuracy.
+
+**Status:** Pre-implementation specification
+
+### 5. Memory (Persistent State)
+The structured knowledge store that agents use to persist facts, user preferences, and task state. Changes to memory namespaces are signal sources for Pulse.
+
+**Status:** Pre-implementation specification
+
+## The Complete Vision
+
+When fully built, Macroa will enable:
+
+### For Users
+- Agents that notice when you need help without being asked
+- Privacy-first design—all learning happens on your machine
+- Performance that improves over time as the system learns your patterns
+- No subscription costs for basic agent functionality
+
+### For Developers
+- A module system for building reusable agent capabilities
+- Capability-based security that prevents modules from accessing resources they shouldn't
+- Deterministic infrastructure that removes the need to use LLMs for routine coordination
+- A platform that works entirely offline (optional network access for specific capabilities)
+
+### For Researchers
+- A reference implementation of hierarchical signal perception for AI agents
+- Open-source architecture for studying proactive agent behavior
+- Transparent training loops and model weights for reproducible research
+
+## Why "Operating System"?
+
+Macroa is called an operating system because it provides the same fundamental services for AI agents that traditional operating systems provide for programs:
+
+| Traditional OS | Macroa |
+|----------------|--------|
+| Process scheduling | Agent activation via Pulse |
+| Memory management | Structured memory namespaces |
+| Capability-based security | Module permissions and sandboxing |
+| Inter-process communication | Signal bus and event coordination |
+| Device drivers | Signal source adapters (filesystem, network, etc.) |
+
+Just as you don't reimplement process scheduling every time you write a program, with Macroa you don't reimplement proactive behavior every time you build an agent module.
+
+## Project Status
+
+Macroa is in **active early development**. Pulse is the first component being built as a proof of concept. The architecture documents for all components are complete, and implementation is proceeding in the order specified in the build documents.
+
+This is a long-term project with a clear vision but no artificial deadlines.
+
+## Open Source Philosophy
+
+Macroa is released under the **AGPLv3 license**:
+- Free for everyone to use, study, and modify
+- Any modifications must be published under the same license
+- Commercial use is permitted, but source code must remain open
+
+This ensures that the platform remains transparent and that improvements benefit the entire community.
+
+## Learn More
+
+<CardGroup cols={2}>
+  <Card title="Design Paper" icon="file-text" href="/resources/design-paper">
+    The technical rationale behind Pulse's architecture
+  </Card>
+  <Card title="GitHub Repository" icon="github" href="https://github.com/aniolowie/Macroa">
+    Source code and complete documentation
+  </Card>
+</CardGroup>
+
+## Contributing
+
+Macroa is an open-source project welcoming contributions. The project is in early stages, and the best way to contribute right now is to:
+
+1. **Read the architecture documents** to understand the vision
+2. **Experiment with Pulse** once the proof of concept is released
+3. **Provide feedback** on the design and implementation approach
+4. **Build modules** that demonstrate novel use cases for proactive agents
+
+Visit the [GitHub repository](https://github.com/aniolowie/Macroa) for more information on how to contribute.

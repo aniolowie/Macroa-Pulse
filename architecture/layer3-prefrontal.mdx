@@ -1,0 +1,244 @@
+---
+title: "Layer 3: Prefrontal"
+description: "Question formation and escalation gating"
+---
+
+## Overview
+
+The Prefrontal layer is the final filter before waking the agent. It takes a high-scoring window from Layer 2 (Limbic) and decides:
+
+1. **Should we escalate?** Is the score above threshold and the context clear enough?
+2. **What should we ask?** If escalating, form a specific, focused question using the module's question template.
+
+<Info>
+**Cost:** Near-zero (string interpolation only)  
+**Output:** `EscalationDecision` with a scoped question or `should_escalate=False`
+</Info>
+
+## Architecture
+
+```
+Layer 2: Limbic
+    │
+    ▼ (score > threshold)
+┌────────────────────────────────┐
+│  Layer 3: Prefrontal           │
+│                                │
+│  1. Check score vs threshold   │
+│  2. Retrieve question template │
+│  3. Interpolate with event     │
+│  4. Validate question formed   │
+└────────┬───────────────────────┘
+         │
+         ├──► should_escalate=True  ──► wake agent with question
+         └──► should_escalate=False ──► ignore
+```
+
+## Escalation Decision
+
+Every evaluation produces an `EscalationDecision`:
+
+```python pulse/prefrontal.py
+@dataclass
+class EscalationDecision:
+    module_id: str
+    should_escalate: bool
+    question: str | None
+    confidence: float
+    window: list[SignalEvent]
+```
+
+<Note>
+**Invariant:** `should_escalate` is `True` only when `question` is a non-empty string.
+</Note>
+
+## Gating Logic
+
+The Prefrontal layer rejects escalation if **any** of the following are true:
+
+- Score is below threshold (default: 0.65)
+- Question template is missing or empty
+- Template substitution produces an empty string
+- Template substitution raises any exception
+
+```python pulse/prefrontal.py
+def evaluate(
+    self,
+    module_id: str,
+    score: float,
+    window: list[SignalEvent],
+    fingerprint: ModuleFingerprint,
+) -> EscalationDecision:
+    """
+    Gate and form the escalation question.
+
+    Returns should_escalate=False if:
+      - score is below threshold
+      - the question template is missing or empty
+      - template substitution produces an empty string
+      - template substitution raises any exception
+    """
+    def _no(confidence: float = score) -> EscalationDecision:
+        return EscalationDecision(
+            module_id=module_id,
+            should_escalate=False,
+            question=None,
+            confidence=confidence,
+            window=window,
+        )
+
+    if score < self._threshold:
+        return _no()
+
+    template = fingerprint.question_template
+    if not template or not template.strip():
+        return _no()
+
+    location = window[-1].location if window else ""
+
+    try:
+        question = template.format(location=location)
+    except (KeyError, ValueError, IndexError):
+        return _no()
+
+    if not question.strip():
+        return _no()
+
+    return EscalationDecision(
+        module_id=module_id,
+        should_escalate=True,
+        question=question,
+        confidence=score,
+        window=window,
+    )
+```
+
+## Template Interpolation
+
+The question template is a simple Python format string with a `{location}` placeholder:
+
+```json
+{
+  "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?"
+}
+```
+
+When a file is created at `/home/user/Downloads/hw3.pdf`, the template is interpolated:
+
+```
+"A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?"
+```
+
+<Warning>
+All question templates **must** contain the `{location}` placeholder. This is validated during fingerprint parsing.
+</Warning>
+
+### Current Limitations
+
+The current implementation only supports `{location}`, which is extracted from the **last event in the window**:
+
+```python pulse/prefrontal.py
+location = window[-1].location if window else ""
+```
+
+**Future expansion:** support for additional placeholders like `{delta_type}`, `{timestamp}`, `{extension}`, etc.
+
+## Ambiguity Resolution (Future)
+
+In the current implementation, each module has its own LSTM and question template. When multiple modules share a cluster (see [Layer 2: Limbic](/architecture/layer2-limbic)), Layer 3 must disambiguate.
+
+**Planned approach (from ARCHITECTURE.md):**
+
+> If Layer 3 cannot identify a single best-matching module (two modules in the cluster both match equally well), it forms a broader question:
+>
+> `"Something changed in the {cluster} cluster. Specifically: {event_summary}. Which of the following is relevant: {module_list}?"`
+
+This broader question is more expensive for the agent to answer, but it only occurs when Layer 3 genuinely cannot resolve the ambiguity deterministically.
+
+## Threshold Tuning
+
+The escalation threshold can be adjusted at runtime:
+
+```python pulse/prefrontal.py
+def set_threshold(self, t: float) -> None:
+    """Update the escalation threshold at runtime."""
+    if not 0.0 <= t <= 1.0:
+        raise ValueError(f"threshold must be in [0.0, 1.0], got {t!r}")
+    self._threshold = t
+```
+
+<Accordion title="Threshold tuning guidelines">
+- **0.5–0.6:** Very sensitive. More false positives, fewer missed events.
+- **0.65–0.7:** Balanced (default). Recommended for most modules.
+- **0.75–0.85:** Conservative. Fewer false positives, may miss edge cases.
+- **0.9+:** Extremely selective. Only fires on very confident patterns.
+
+Start with the module's `default_threshold` from its fingerprint and adjust based on user feedback.
+</Accordion>
+
+## Public API
+
+```python pulse/prefrontal.py
+class PrefrontalLayer:
+    def __init__(self, threshold: float = 0.65) -> None:
+        """Initialize with a default escalation threshold."""
+
+    def evaluate(
+        self,
+        module_id: str,
+        score: float,
+        window: list[SignalEvent],
+        fingerprint: ModuleFingerprint,
+    ) -> EscalationDecision:
+        """
+        Gate and form the escalation question.
+
+        Returns an EscalationDecision with should_escalate=True only if all
+        gating conditions pass and a valid question is formed.
+        """
+
+    def set_threshold(self, t: float) -> None:
+        """Update the escalation threshold at runtime."""
+```
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Deterministic" icon="gears">
+    Pure string interpolation. No LLM calls, no neural networks.
+  </Card>
+  <Card title="Fail-Safe" icon="shield-check">
+    All template errors result in no escalation, never crashes.
+  </Card>
+  <Card title="Scoped Questions" icon="bullseye">
+    Questions are specific to the triggering event, not generic.
+  </Card>
+  <Card title="Tunable" icon="sliders">
+    Threshold can be adjusted per-module for precision/recall trade-off.
+  </Card>
+</CardGroup>
+
+## Example Flow
+
+### Homework Agent
+
+1. **Layer 1 (Retina):** Detects new file `/home/user/Downloads/hw3.pdf`
+2. **Layer 2 (Limbic):** LSTM scores the event window → **0.87** (above threshold)
+3. **Layer 3 (Prefrontal):** Evaluates escalation
+   - Template: `"A new file appeared at {location}. Is this file related to a course assignment or homework?"`
+   - Interpolates: `"A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?"`
+   - Returns: `EscalationDecision(should_escalate=True, question="...", confidence=0.87)`
+4. **Kernel:** Receives `EscalationDecision` and wakes agent with the scoped question
+
+### Below-Threshold Case
+
+1. **Layer 1 (Retina):** Detects time tick at 3:47 AM
+2. **Layer 2 (Limbic):** LSTM scores the event window → **0.23** (below threshold 0.65)
+3. **Layer 3 (Prefrontal):** Returns `EscalationDecision(should_escalate=False, question=None, confidence=0.23)`
+4. **Kernel:** Does not wake the agent
+
+## Integration with Kernel
+
+The Prefrontal layer is the **final output** of the Pulse subsystem. When `should_escalate=True`, the kernel receives the `EscalationDecision` and wakes the agent with the formed question.
+
+See [Signal Bus](/architecture/signal-bus) for how escalation decisions are delivered to the kernel.

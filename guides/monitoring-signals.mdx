@@ -1,0 +1,394 @@
+---
+title: Monitoring Signals
+description: Subscribe to events and debug signal flow through Pulse's three layers
+---
+
+## Overview
+
+Pulse emits events at every layer, making it possible to observe signal flow, debug unexpected behavior, and understand why (or why not) an escalation occurred.
+
+## The Event Flow
+
+Signals flow through three layers:
+
+```
+Layer 1: RETINA → SignalEvent
+    ↓
+Layer 2: LIMBIC → RelevanceScore (if score > threshold)
+    ↓
+Layer 3: PREFRONTAL → EscalationDecision (if should_escalate)
+    ↓
+KERNEL → Agent activation
+```
+
+You can subscribe at any layer to observe events.
+
+<Steps>
+
+## Subscribe to Layer 1: Raw Signal Events
+
+### Step 1: Access the SignalBus
+
+The `SignalBus` (`pulse/bus.py`) is an internal event dispatcher that broadcasts `SignalEvent` objects from the Retina:
+
+```python
+from pulse import PulseRegistry
+
+pulse = PulseRegistry(watch_dirs=[])
+
+# Define a callback
+def on_signal(event):
+    print(f"[RETINA] {event.source} | {event.delta_type} | {event.location}")
+
+# Subscribe before starting
+pulse._bus.subscribe(on_signal)
+pulse.start()
+```
+
+<Warning>
+The `_bus` attribute is internal (prefixed with `_`). Direct access is not part of the public API and may change. For production use, prefer subscribing to Layer 3 escalations via `on_escalation()`.
+</Warning>
+
+### Step 2: Inspect SignalEvent fields
+
+Every `SignalEvent` includes:
+
+```python
+@dataclass
+class SignalEvent:
+    source: str          # "filesystem" | "memory" | "time" | "network"
+    location: str        # path, namespace, or endpoint
+    delta_type: str      # "created" | "modified" | "deleted" | "tick"
+    magnitude: float     # 0.0–1.0, normalized change size
+    timestamp: float     # unix timestamp
+    features: dict       # source-specific features
+```
+
+**Feature extraction for different sources:**
+
+**Filesystem:**
+```python
+{
+    "path": "/home/user/Downloads/hw3.pdf",
+    "extension": ".pdf",
+    "size_bytes": 204800,
+    "directory_depth": 3,
+    "filename_tokens": ["hw3"]
+}
+```
+
+**Memory:**
+```python
+{
+    "namespace": "/mem/homework/",
+    "key": "last_checked",
+    "value_length": 12
+}
+```
+
+**Time tick:**
+```python
+{
+    "hour_sin": 0.866,   # sin(2π * hour / 24)
+    "hour_cos": 0.5,
+    "dow_sin": 0.782,    # sin(2π * day_of_week / 7)
+    "dow_cos": 0.623,
+    "minutes_since_last_activation": 847
+}
+```
+
+### Step 3: Filter events
+
+To avoid noise, filter by source or location:
+
+```python
+def on_signal(event):
+    # Only filesystem events
+    if event.source == "filesystem":
+        # Only .pdf files
+        if event.features.get("extension") == ".pdf":
+            print(f"[PDF] {event.location}")
+```
+
+</Steps>
+
+<Steps>
+
+## Subscribe to Layer 3: Escalation Decisions
+
+### Step 1: Register an escalation handler
+
+This is the **primary public API** for monitoring Pulse:
+
+```python
+from pulse import PulseRegistry, EscalationDecision
+
+pulse = PulseRegistry(watch_dirs=[])
+
+def on_escalation(decision: EscalationDecision):
+    print(f"[ESCALATION] Module: {decision.module_id}")
+    print(f"             Question: {decision.question}")
+    print(f"             Confidence: {decision.confidence:.2f}")
+    print(f"             Events: {len(decision.triggering_events)}")
+
+pulse.on_escalation(on_escalation)
+pulse.start()
+```
+
+### Step 2: Inspect EscalationDecision fields
+
+```python
+@dataclass
+class EscalationDecision:
+    module_id: str
+    question: str                      # Interpolated from template
+    confidence: float                  # Layer 2 relevance score
+    triggering_events: list[SignalEvent]
+    should_escalate: bool              # True if threshold exceeded
+```
+
+Only decisions with `should_escalate=True` are passed to your handler.
+
+### Step 3: Debug escalation logic
+
+To understand why an escalation occurred, inspect the triggering events:
+
+```python
+def on_escalation(decision: EscalationDecision):
+    print(f"\n[ESCALATION] {decision.module_id}")
+    print(f"Question: {decision.question}")
+    print(f"Confidence: {decision.confidence:.2f}\n")
+    
+    for i, event in enumerate(decision.triggering_events, 1):
+        print(f"  Event {i}:")
+        print(f"    Source: {event.source}")
+        print(f"    Type: {event.delta_type}")
+        print(f"    Location: {event.location}")
+        print(f"    Magnitude: {event.magnitude:.2f}")
+        print(f"    Features: {event.features}")
+```
+
+</Steps>
+
+## Debugging: Why Didn't My Module Escalate?
+
+If you expect an escalation but don't see one, check each layer:
+
+<AccordionGroup>
+<Accordion title="Layer 1: Is the Retina detecting the event?">
+**Check:**
+1. Is the directory in your fingerprint's `watch_directories`?
+2. Is the Retina running? Call `pulse.start()` before making changes.
+
+**Debug:**
+```python
+# Subscribe to raw signals
+pulse._bus.subscribe(lambda e: print(f"[RETINA] {e.source} {e.location}"))
+```
+
+If you see the event logged, Layer 1 is working. Move to Layer 2.
+</Accordion>
+
+<Accordion title="Layer 2: Is the relevance score above threshold?">
+**Check:**
+1. What is the module's `default_threshold`? (default: 0.65)
+2. Has the model been trained on similar events?
+
+**Debug:**
+
+Access the Limbic Layer directly to check scores:
+
+```python
+# Create a test event
+from pulse.retina import SignalEvent
+import time
+
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/Downloads/test.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=time.time(),
+    features={
+        "path": "/home/user/Downloads/test.pdf",
+        "extension": ".pdf",
+        "size_bytes": 100000,
+        "directory_depth": 3,
+        "filename_tokens": ["test"]
+    }
+)
+
+# Score it
+score = pulse._limbic.score("homework-agent", [event])
+print(f"Relevance score: {score:.3f}")
+
+# Compare to threshold
+fingerprint = pulse._fingerprints["homework-agent"]
+print(f"Threshold: {fingerprint.default_threshold}")
+print(f"Would escalate: {score >= fingerprint.default_threshold}")
+```
+
+If the score is too low:
+- The model hasn't learned this pattern yet (provide training feedback)
+- The fingerprint's signal priors don't match the event (update the fingerprint)
+</Accordion>
+
+<Accordion title="Layer 3: Is the question template valid?">
+**Check:**
+1. Does the template contain `{location}`?
+2. Are there any exceptions in the prefrontal layer?
+
+**Debug:**
+
+The Prefrontal Layer is deterministic, so if Layer 2 fires, Layer 3 should escalate unless the threshold isn't met.
+
+Check the `should_escalate` field:
+```python
+def on_escalation(decision: EscalationDecision):
+    if not decision.should_escalate:
+        print(f"[DEBUG] Decision created but should_escalate=False")
+        print(f"        Confidence: {decision.confidence}")
+```
+
+If `should_escalate=False`, the score was below threshold.
+</Accordion>
+</AccordionGroup>
+
+## Advanced Monitoring: Feature Vectors
+
+To see exactly what Layer 2 receives, convert events to feature vectors:
+
+```python
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/Downloads/hw3.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=time.time(),
+    features={
+        "path": "/home/user/Downloads/hw3.pdf",
+        "extension": ".pdf",
+        "size_bytes": 204800,
+        "directory_depth": 3,
+        "filename_tokens": ["hw3"]
+    }
+)
+
+# Convert to feature vector (16-dimensional)
+feature_vector = event.to_feature_vector()
+print(f"Feature vector: {feature_vector}")
+```
+
+**Feature vector layout (FEATURE_DIM = 16):**
+
+| Index | Feature | Description |
+|-------|---------|-------------|
+| 0 | magnitude | Event magnitude (0.0–1.0) |
+| 1 | delta_type | Encoded as 0.25/0.5/0.75/1.0 |
+| 2 | source | Encoded as 0.25/0.5/0.75/1.0 |
+| 3 | hour_sin | sin(2π × hour / 24) |
+| 4 | hour_cos | cos(2π × hour / 24) |
+| 5 | dow_sin | sin(2π × day / 7) |
+| 6 | dow_cos | cos(2π × day / 7) |
+| 7 | minutes_since_last | Time since last activation |
+| 8 | size_bytes | log₁₀(size) normalized |
+| 9 | directory_depth | Path depth normalized |
+| 10 | extension_hash | CRC32 hash % 1000 / 1000.0 |
+| 11–15 | reserved | For memory/network features |
+
+See `pulse/fingerprint.py:17-30` for the complete layout.
+
+## Performance Monitoring
+
+Track Pulse's resource usage:
+
+```python
+import psutil
+import threading
+
+def monitor_pulse():
+    """Print Pulse thread and CPU stats every 5 seconds."""
+    while True:
+        threads = [t.name for t in threading.enumerate() if "pulse" in t.name.lower()]
+        print(f"[PULSE] Active threads: {threads}")
+        
+        # Note: requires psutil
+        cpu = psutil.cpu_percent(interval=1)
+        print(f"[PULSE] CPU usage: {cpu:.1f}%")
+        
+        time.sleep(5)
+
+# Run in background
+threading.Thread(target=monitor_pulse, daemon=True).start()
+```
+
+**Expected threads:**
+- `retina-forwarder`: Forwards events from Retina to SignalBus
+- `pulse-scorer-X`: Thread pool workers (4 by default) for LSTM inference
+- Watchdog observer threads (one per monitored directory)
+
+**Expected CPU usage:**
+- Idle: ~0% (Retina only wakes on filesystem events or time tick)
+- Active: < 5% (LSTM inference is fast on CPU)
+
+## Logging Signal Flow
+
+For debugging, log the complete flow:
+
+```python
+def log_signal(event):
+    print(f"[L1 RETINA] {event.source:10s} | {event.delta_type:8s} | {event.location}")
+
+def log_escalation(decision):
+    print(f"[L3 ESCALATION] {decision.module_id} | score={decision.confidence:.2f} | {decision.question[:50]}...")
+
+pulse._bus.subscribe(log_signal)
+pulse.on_escalation(log_escalation)
+pulse.start()
+```
+
+**Sample output:**
+```
+[L1 RETINA] filesystem | created  | /home/user/Downloads/hw3.pdf
+[L3 ESCALATION] homework-agent | score=0.78 | A new file appeared at /home/user/Downloads/hw3...
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="No events are being logged">
+**Check:**
+1. Did you call `pulse.start()`?
+2. Are watch directories correct? Print them:
+   ```python
+   print(pulse._watch_dirs)
+   ```
+3. Are you making changes in monitored directories?
+</Accordion>
+
+<Accordion title="Too many events (noise)">
+**Reduce noise by:**
+1. Narrowing `watch_directories` in fingerprints
+2. Adding more `irrelevant_extensions`
+3. Increasing `default_threshold` (fewer false positives)
+</Accordion>
+
+<Accordion title="Events detected but no escalations">
+The model's relevance score is below threshold. Either:
+1. Lower the `default_threshold` (temporary fix)
+2. Provide training labels to teach the model (proper fix)
+
+See the [Training Models guide](/guides/training-models) for details.
+</Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Training Models" icon="graduation-cap" href="/guides/training-models">
+Learn how to improve model accuracy with feedback
+</Card>
+<Card title="Integration" icon="plug" href="/guides/integration">
+Integrate Pulse into your agent system
+</Card>
+</CardGroup>

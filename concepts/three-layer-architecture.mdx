@@ -1,0 +1,311 @@
+---
+title: Three-Layer Architecture
+description: Deep dive into Retina, Limbic, and Prefrontal layers
+---
+
+## Hierarchical Signal Processing
+
+Pulse's three-layer architecture mirrors the hierarchical processing found in biological brains. Each layer has a specific responsibility and acts as a filter, ensuring that expensive computation only occurs when absolutely necessary.
+
+```
+ENVIRONMENT (files, memory, network, time)
+        │ continuous stream of raw events
+        ▼
+┌─────────────────────────────────────────┐
+│  LAYER 1: RETINA                        │
+│  Deterministic event detection          │
+│  Cost: ~0 CPU, always running           │
+│  Output: sparse SignalEvent stream      │
+└──────────────────┬──────────────────────┘
+                   │ only when delta detected
+                   ▼
+┌─────────────────────────────────────────┐
+│  LAYER 2: LIMBIC FILTER                 │
+│  Per-module cluster neural networks     │
+│  Cost: milliseconds on CPU              │
+│  Output: RelevanceScore per cluster     │
+└──────────────────┬──────────────────────┘
+                   │ only when score > threshold
+                   ▼
+┌─────────────────────────────────────────┐
+│  LAYER 3: PREFRONTAL FILTER             │
+│  Template-based question formation      │
+│  Cost: ~0 (string interpolation)        │
+│  Output: ScopedQuestion for the kernel  │
+└──────────────────┬──────────────────────┘
+                   │ only when question formed
+                   ▼
+              KERNEL SIGNAL BUS
+              (wakes agent with scoped question)
+```
+
+<Info>
+Each layer filters aggressively. The vast majority of environmental changes never reach the agent.
+</Info>
+
+## Layer 1: Retina
+
+### Responsibility
+
+The Retina is a **deterministic change detector**. It watches the environment for deltas and emits structured events when something changes. It does not interpret, reason, or filter for relevance — it only detects.
+
+### What It Watches
+
+<CardGroup cols={2}>
+  <Card title="File System" icon="folder">
+    New, modified, or deleted files in monitored directories using `watchdog` library (inotify on Linux)
+  </Card>
+  
+  <Card title="Memory Namespaces" icon="database">
+    Facts written or updated in monitored namespaces via internal event hooks
+  </Card>
+  
+  <Card title="Time Signals" icon="clock">
+    Cyclical time features: hour of day, day of week, time since last activation (60-second tick)
+  </Card>
+  
+  <Card title="Network (v2)" icon="globe">
+    Hash comparison on monitored HTTP endpoints (optional, future version)
+  </Card>
+</CardGroup>
+
+### Signal Events
+
+When the Retina detects a change, it emits a `SignalEvent` — a structured record containing:
+
+- **source**: `filesystem`, `memory`, `time`, or `network`
+- **location**: file path, namespace, or endpoint
+- **delta_type**: `created`, `modified`, `deleted`, or `tick`
+- **magnitude**: 0.0–1.0, normalized change size
+- **timestamp**: Unix timestamp
+- **features**: source-specific metadata
+
+#### Example: File System Event
+
+```python
+SignalEvent(
+    source="filesystem",
+    location="/home/user/Downloads/hw3.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1709856234.5,
+    features={
+        "path": "/home/user/Downloads/hw3.pdf",
+        "extension": ".pdf",
+        "size_bytes": 204800,
+        "directory_depth": 3,
+        "filename_tokens": ["hw3"]
+    }
+)
+```
+
+#### Example: Time Tick Event
+
+```python
+SignalEvent(
+    source="time",
+    location="tick",
+    delta_type="tick",
+    magnitude=1.0,
+    timestamp=1709856240.0,
+    features={
+        "hour_sin": 0.866,  # sin(2π * hour / 24)
+        "hour_cos": 0.5,
+        "dow_sin": 0.782,   # sin(2π * day_of_week / 7)
+        "dow_cos": 0.623,
+        "minutes_since_last_activation": 847
+    }
+)
+```
+
+<Note>
+Time features use cyclical sine/cosine encoding to correctly represent circular time. In this encoding, 23:00 and 01:00 are mathematically close, not far apart.
+</Note>
+
+### Key Properties
+
+- **Stateless**: The Retina has no memory. It doesn't remember previous events — it only emits.
+- **Selective monitoring**: Only watches directories declared in module fingerprints, not the entire filesystem.
+- **Threaded**: Runs in its own thread, placing events onto a thread-safe queue for Layer 2.
+- **Always on**: The time tick fires every 60 seconds regardless of other events. This is the Pulse's heartbeat.
+
+## Layer 2: Limbic Filter
+
+### Responsibility
+
+The Limbic Filter is the **learning component** of Pulse. For each registered module, it maintains a small neural network that takes a window of recent `SignalEvent` objects and outputs a **relevance score** (0.0–1.0).
+
+A score above the threshold triggers Layer 3.
+
+### Architecture: Per-Module Models
+
+Each module has its own independent LSTM (Long Short-Term Memory) neural network:
+
+- **Input**: Sliding window of last N `SignalEvent` feature vectors, flattened and padded
+- **Hidden size**: 64 units
+- **Output**: Single float (relevance score, 0.0–1.0) via sigmoid activation
+- **Parameters**: ~50,000–200,000 (well under 1M)
+- **Inference time**: Under 5ms on CPU
+
+<Info>
+Why LSTM over transformers? LSTMs are designed for streaming time-series data, run efficiently on CPU, and handle variable-length sequences naturally. Transformers require fixed attention windows and are expensive for continuous inference.
+</Info>
+
+### Cold Start: Module Fingerprints
+
+The challenge: a neural network is useless before it has training data. Pulse solves this with **module fingerprints** — JSON structures that modules provide at registration describing what signals are relevant to them.
+
+```json
+{
+    "module_id": "homework-agent",
+    "cluster": "academic",
+    "version": "1.0",
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Downloads", "~/Documents"],
+            "relevant_extensions": [".pdf", ".docx", ".pptx"],
+            "irrelevant_extensions": [".exe", ".zip", ".mp3"]
+        },
+        "memory": {
+            "watch_namespaces": ["/mem/homework/", "/mem/courses/"],
+            "high_relevance_keys": ["last_assignment", "due_date"]
+        },
+        "time": {
+            "active_hours": [8, 22],
+            "active_days": [0, 1, 2, 3, 4],
+            "typical_interval_hours": 24
+        }
+    },
+    "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?",
+    "default_threshold": 0.65
+}
+```
+
+The fingerprint is converted into a **relevance mask** that biases the LSTM's input weights, giving the model a meaningful prior on day one:
+
+- Relevant features (e.g., `.pdf` files in Downloads) → weights scaled **up** (2.0x)
+- Irrelevant features (e.g., `.mp3` files) → weights scaled **down** (0.1x)
+- Neutral features → weights unchanged (1.0x)
+
+### Online Learning
+
+After each agent activation, Pulse receives a training label:
+
+1. **Implicit positive**: Agent was activated and took action (wrote memory, ran a tool)
+2. **Implicit negative**: Agent was activated but did nothing
+3. **Explicit override**: User responds to "was this useful?" prompt (overrides implicit label)
+
+The model updates with a single gradient step using this label. Over time, it learns the user's specific patterns:
+
+- A student's homework files tend to appear in Downloads between 8pm–11pm on weekdays
+- `.pptx` files in Documents on Monday mornings are usually relevant
+- Time ticks at 9am on Sundays often precede relevant memory namespace updates
+
+<Tip>
+All training data is stored locally in `~/.macroa/pulse/training_data.db` (SQLite). No data ever leaves the machine.
+</Tip>
+
+### Cluster Assignment
+
+Modules are assigned to **clusters** based on their declared `cluster` field in the fingerprint. Multiple modules can share a cluster:
+
+- `homework-agent` and `notes-agent` both belong to cluster `academic`
+- `email-agent` and `calendar-agent` both belong to cluster `communication`
+
+When modules share a cluster, they share a cluster model. The model fires for the cluster as a whole, and Layer 3 determines which specific module is relevant.
+
+This allows related modules to benefit from shared pattern learning while maintaining specific question templates.
+
+## Layer 3: Prefrontal Filter
+
+### Responsibility
+
+The Prefrontal Filter takes a `RelevanceScore` above threshold and produces a **ScopedQuestion** — a specific, focused question for the agent.
+
+This is the critical step that prevents the agent from waking with a blank slate.
+
+### How It Works
+
+1. **Look up** the cluster's registered modules and their question templates
+2. **Identify** which module's fingerprint best matches the triggering events (rule-based matching)
+3. **Interpolate** the question template with specific signal details
+4. **Emit** a `ScopedQuestion` to the kernel signal bus
+
+#### Example Flow
+
+<Steps>
+  <Step title="Event triggers">
+    New file `/home/user/Downloads/hw3.pdf` created
+  </Step>
+  
+  <Step title="Limbic fires">
+    Cluster `academic` scores 0.78 (above threshold of 0.65)
+  </Step>
+  
+  <Step title="Prefrontal matches">
+    Best matching module: `homework-agent`
+  </Step>
+  
+  <Step title="Template interpolation">
+    Template: `"A new file appeared at {location}. Is this file related to a course assignment or homework?"`
+    
+    Result: `"A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?"`
+  </Step>
+  
+  <Step title="Agent wakes">
+    Agent receives scoped question with full context, not a blank slate
+  </Step>
+</Steps>
+
+### Fallback: Ambiguous Cases
+
+If Layer 3 cannot identify a single best-matching module (two modules in the cluster match equally well), it forms a broader question:
+
+```
+"Something changed in the academic cluster. 
+Specifically: new file /home/user/Downloads/hw3.pdf. 
+Which of the following is relevant: homework-agent, notes-agent?"
+```
+
+This broader question is more expensive for the agent to answer, but it only occurs when Layer 3 genuinely cannot resolve ambiguity deterministically.
+
+### Gating Logic
+
+Layer 3 applies final gating before escalation. It returns `should_escalate=False` if:
+
+- Score is below threshold
+- Question template is missing or empty
+- Template substitution produces an empty string
+- Template substitution raises any exception
+
+<Note>
+Invariant: `should_escalate` is `True` only when `question` is a non-empty string.
+</Note>
+
+## Why Three Layers?
+
+The three-layer separation is deliberate:
+
+1. **Retina (Layer 1)** does the continuous, cheap work → always running
+2. **Limbic (Layer 2)** does the pattern recognition → only when deltas occur
+3. **Prefrontal (Layer 3)** does the question formation → only when patterns match
+
+This cascade ensures that expensive operations only occur when necessary. The agent never sees:
+
+- Filesystem events for irrelevant file types
+- Time ticks that don't match learned patterns  
+- Memory updates in namespaces it doesn't care about
+
+It only sees focused questions when all three layers agree something is worth attention.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Signal Perception" icon="signal" href="/concepts/signal-perception">
+    Learn how signals flow through all three layers
+  </Card>
+  
+  <Card title="Module Registration" icon="puzzle-piece" href="/guides/registering-modules">
+    Write fingerprints and register your modules
+  </Card>
+</CardGroup>

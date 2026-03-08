@@ -1,0 +1,287 @@
+---
+title: LimbicLayer
+description: Layer 2 per-module relevance scoring with online learning
+---
+
+## Overview
+
+`LimbicLayer` is Layer 2 of the Pulse subsystem. It maintains a registry of per-module LSTM models that learn, online, whether a window of [SignalEvents](/api/signal-event) is relevant enough to wake a specific module.
+
+Each module gets its own independent `ClusterModel` that is initialized with cold-start weight biasing derived from the module's [ModuleFingerprint](/api/module-fingerprint).
+
+## Import
+
+```python
+from pulse.limbic import LimbicLayer, ClusterModel
+```
+
+## LimbicLayer Class
+
+Defined in `pulse/limbic.py:63`.
+
+### Constructor
+
+```python
+def __init__(self) -> None
+```
+
+Creates an empty registry. Modules must be registered via `register()` before scoring.
+
+### Methods
+
+#### register
+
+```python
+def register(self, module_id: str, fingerprint: ModuleFingerprint) -> None
+```
+
+Create a ClusterModel for the module and apply cold-start weight biasing derived from `fingerprint.slot_relevance_mask()`.
+
+Relevant feature slots have their LSTM input weights scaled up; irrelevant slots have them scaled down so the model starts with a meaningful prior instead of random noise.
+
+<ParamField path="module_id" type="str" required>
+  Unique identifier for the module.
+</ParamField>
+
+<ParamField path="fingerprint" type="ModuleFingerprint" required>
+  Parsed fingerprint containing signal priors. See [ModuleFingerprint](/api/module-fingerprint).
+</ParamField>
+
+**Example:**
+
+```python
+from pulse.limbic import LimbicLayer
+from pulse.fingerprint import parse_fingerprint
+
+limbic = LimbicLayer()
+
+fingerprint_raw = {
+    "module_id": "homework_watcher",
+    "cluster": "homework",
+    "version": "1.0.0",
+    "question_template": "Check {location}?",
+    "default_threshold": 0.7,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Documents/Homework"],
+            "relevant_extensions": [".pdf"],
+            "irrelevant_extensions": [],
+        },
+    },
+}
+
+fingerprint = parse_fingerprint(fingerprint_raw)
+limbic.register("homework_watcher", fingerprint)
+```
+
+#### score
+
+```python
+def score(self, module_id: str, window: list[SignalEvent]) -> float
+```
+
+Run inference on a window of SignalEvents and return a relevance score in [0.0, 1.0].
+
+Returns `0.0` if the window is empty or the module is not registered.
+
+<ParamField path="module_id" type="str" required>
+  The module whose model will score the window.
+</ParamField>
+
+<ParamField path="window" type="list[SignalEvent]" required>
+  Sequence of events to evaluate. Converted to a (1, T, 16) tensor internally.
+</ParamField>
+
+**Returns:**
+- `float`: Relevance score in [0.0, 1.0]
+
+**Example:**
+
+```python
+from pulse.retina import SignalEvent
+
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/Documents/Homework/math.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1678123456.0,
+    features={"extension": ".pdf", "size_bytes": 524288, "directory_depth": 4, "filename_tokens": ["math"]},
+)
+
+score = limbic.score("homework_watcher", [event])
+print(f"Relevance score: {score:.2f}")
+```
+
+#### update_weights
+
+```python
+def update_weights(
+    self,
+    module_id: str,
+    window: list[SignalEvent],
+    label: float,
+) -> None
+```
+
+Perform a single online gradient step using BCELoss. This is how the model learns from feedback.
+
+No-op if the window is empty or the module is not registered.
+
+<ParamField path="module_id" type="str" required>
+  The module whose model will be updated.
+</ParamField>
+
+<ParamField path="window" type="list[SignalEvent]" required>
+  The same event window that was previously scored.
+</ParamField>
+
+<ParamField path="label" type="float" required>
+  Ground truth label in [0.0, 1.0], where 1.0 means the window was highly relevant.
+</ParamField>
+
+**Example:**
+
+```python
+# After the agent confirms the event was relevant:
+limbic.update_weights("homework_watcher", [event], label=1.0)
+
+# After the agent confirms the event was NOT relevant:
+limbic.update_weights("homework_watcher", [event], label=0.0)
+```
+
+#### save
+
+```python
+def save(self, path: Path) -> None
+```
+
+Persist all model weights and optimizer states to disk as a PyTorch checkpoint.
+
+<ParamField path="path" type="Path" required>
+  File path where the checkpoint will be written.
+</ParamField>
+
+**Example:**
+
+```python
+from pathlib import Path
+
+limbic.save(Path("/var/pulse/limbic_models.pt"))
+```
+
+#### load
+
+```python
+def load(self, path: Path) -> None
+```
+
+Restore model weights and optimizer states from disk.
+
+Modules present in the checkpoint but not yet registered are re-created as fresh `ClusterModel` instances with restored state.
+
+<ParamField path="path" type="Path" required>
+  File path to the checkpoint created by `save()`.
+</ParamField>
+
+**Example:**
+
+```python
+from pathlib import Path
+
+limbic = LimbicLayer()
+limbic.load(Path("/var/pulse/limbic_models.pt"))
+
+# Models are now restored and ready for inference
+score = limbic.score("homework_watcher", [event])
+```
+
+## ClusterModel Class
+
+Defined in `pulse/limbic.py:22`. This is the internal LSTM model used for scoring.
+
+### Architecture
+
+```python
+class ClusterModel(nn.Module):
+    HIDDEN_SIZE: int = 64
+```
+
+- **Input:** (batch=1, window_len, FEATURE_DIM) float32 tensor
+- **LSTM:** 1 layer, hidden size 64
+- **Output head:** Linear(64, 1) + Sigmoid
+- **Output:** Scalar float32 relevance score in [0.0, 1.0]
+
+### forward
+
+```python
+def forward(self, x: torch.Tensor) -> torch.Tensor
+```
+
+Run inference on a batch of event windows.
+
+<ParamField path="x" type="torch.Tensor" required>
+  Input tensor of shape (1, window_len, FEATURE_DIM).
+</ParamField>
+
+**Returns:**
+- `torch.Tensor`: Scalar relevance score in [0.0, 1.0]
+
+**Example:**
+
+```python
+import torch
+from pulse.limbic import ClusterModel
+
+model = ClusterModel()
+x = torch.randn(1, 5, 16)  # Batch of 1, window of 5 events, 16 features
+score = model(x)
+print(score.item())  # e.g., 0.73
+```
+
+## Cold-Start Weight Biasing
+
+When a module is registered, LimbicLayer applies a cold-start bias to the LSTM input-to-hidden weights using the formula:
+
+```
+scale[i] = 0.1 + 1.9 * mask[i]
+```
+
+Where `mask[i]` comes from `fingerprint.slot_relevance_mask()`:
+
+- `mask = 0.0` → `scale = 0.1` (nearly zeroed, irrelevant slot)
+- `mask = 0.5` → `scale = 1.05` (neutral)
+- `mask = 1.0` → `scale = 2.0` (doubled, highly relevant slot)
+
+This ensures that on day one, the model already attends to the right features.
+
+## Online Learning Loop
+
+```python
+from pulse.limbic import LimbicLayer
+from pulse.retina import SignalEvent
+
+limbic = LimbicLayer()
+# ... register modules ...
+
+# 1. Score an event window
+event = SignalEvent(...)
+score = limbic.score("homework_watcher", [event])
+
+# 2. Present to agent (if score > threshold)
+if score > 0.7:
+    user_feedback = ask_agent("Is this relevant?")
+    
+    # 3. Update weights based on feedback
+    label = 1.0 if user_feedback == "yes" else 0.0
+    limbic.update_weights("homework_watcher", [event], label)
+
+# 4. Model improves over time
+```
+
+## See Also
+
+- [ModuleFingerprint](/api/module-fingerprint) — Provides cold-start priors
+- [SignalEvent](/api/signal-event) — Input to scoring and training
+- [PrefrontalLayer](/api/prefrontal) — Consumes LimbicLayer scores
+- [TrainingBuffer](/api/training) — Manages activation records and feedback

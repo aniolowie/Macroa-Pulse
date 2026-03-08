@@ -1,0 +1,117 @@
+---
+title: EscalationDecision
+description: Layer 3 output representing an escalation recommendation
+---
+
+## Overview
+
+`EscalationDecision` is the structured output of the [PrefrontalLayer](/api/prefrontal) (Layer 3). It encapsulates the decision of whether to wake the agent, what question to ask, and metadata about the confidence and event window.
+
+**Invariant:** `should_escalate` is `True` only when `question` is a non-empty string.
+
+## Import
+
+```python
+from pulse.prefrontal import EscalationDecision
+```
+
+## Class Definition
+
+`EscalationDecision` is a dataclass defined in `pulse/prefrontal.py:17`.
+
+## Attributes
+
+<ResponseField name="module_id" type="str" required>
+  Unique identifier of the module that triggered this decision.
+</ResponseField>
+
+<ResponseField name="should_escalate" type="bool" required>
+  Whether the agent should be woken for this event.
+  
+  `True` only if:
+  - Score meets or exceeds threshold
+  - Question template is valid and non-empty
+  - Template substitution succeeded
+</ResponseField>
+
+<ResponseField name="question" type="str | None" required>
+  The escalation question to present to the agent, or `None` if `should_escalate` is `False`.
+  
+  Constructed by substituting `{location}` in the module's `question_template` with the location from the most recent event in the window.
+</ResponseField>
+
+<ResponseField name="confidence" type="float" required>
+  The relevance score from LimbicLayer that triggered this decision, in range [0.0, 1.0].
+  
+  This is the raw LSTM output before gating by Prefrontal.
+</ResponseField>
+
+<ResponseField name="window" type="list[SignalEvent]" required>
+  The sequence of [SignalEvent](/api/signal-event) objects that were evaluated to produce this decision.
+  
+  Typically a single event in the current implementation, but the architecture supports multi-event windows.
+</ResponseField>
+
+## Usage
+
+`EscalationDecision` objects are produced by `PrefrontalLayer.evaluate()` and delivered to the kernel via the escalation handler registered with [PulseRegistry](/api/pulse-registry).
+
+```python
+from pulse.registry import PulseRegistry
+from pulse.prefrontal import EscalationDecision
+
+registry = PulseRegistry(watch_dirs=["/home/user/workspace"])
+
+def handle_escalation(decision: EscalationDecision) -> None:
+    if decision.should_escalate:
+        print(f"[{decision.module_id}] {decision.question}")
+        print(f"Confidence: {decision.confidence:.2%}")
+        print(f"Events in window: {len(decision.window)}")
+        
+        # Inspect the triggering event
+        last_event = decision.window[-1]
+        print(f"Last event: {last_event.delta_type} at {last_event.location}")
+
+registry.on_escalation(handle_escalation)
+```
+
+## Example Decision
+
+```python
+EscalationDecision(
+    module_id="homework_watcher",
+    should_escalate=True,
+    question="New homework file detected at /home/user/Documents/Homework/math.pdf. Should I review it?",
+    confidence=0.87,
+    window=[
+        SignalEvent(
+            source="filesystem",
+            location="/home/user/Documents/Homework/math.pdf",
+            delta_type="created",
+            magnitude=1.0,
+            timestamp=1678123456.0,
+            features={...},
+        )
+    ],
+)
+```
+
+## No-Escalation Cases
+
+When `should_escalate=False`, the decision looks like:
+
+```python
+EscalationDecision(
+    module_id="homework_watcher",
+    should_escalate=False,
+    question=None,
+    confidence=0.42,  # Below threshold
+    window=[...],
+)
+```
+
+## See Also
+
+- [PrefrontalLayer](/api/prefrontal) — Produces EscalationDecision objects
+- [PulseRegistry](/api/pulse-registry) — Delivers decisions via `on_escalation()` handler
+- [SignalEvent](/api/signal-event) — Events contained in the `window` field

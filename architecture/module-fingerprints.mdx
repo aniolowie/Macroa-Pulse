@@ -1,0 +1,410 @@
+---
+title: "Module Fingerprints"
+description: "Signal priors and cold-start initialization format"
+---
+
+## Overview
+
+A **Module Fingerprint** is the structured description a module provides when registering with the Pulse. It serves two critical purposes:
+
+1. **Runtime routing:** tells Retina which directories and memory namespaces to watch, and tells Layer 3 which question template to use
+2. **Cold-start prior:** tells Layer 2 which feature vector slots matter for this module, so the LSTM model is not random on day one
+
+<Info>
+Fingerprints enable the Pulse to have a **reasonable baseline** on the first day of operation, before any training data exists.
+</Info>
+
+## Fingerprint Format
+
+```json
+{
+  "module_id": "homework-agent",
+  "cluster": "academic",
+  "version": "1.0",
+  "signal_priors": {
+    "filesystem": {
+      "watch_directories": ["~/Downloads", "~/Documents"],
+      "relevant_extensions": [".pdf", ".docx", ".pptx"],
+      "irrelevant_extensions": [".exe", ".zip", ".mp3"]
+    },
+    "memory": {
+      "watch_namespaces": ["/mem/homework/", "/mem/courses/"],
+      "high_relevance_keys": ["last_assignment", "due_date"]
+    },
+    "time": {
+      "active_hours": [8, 22],
+      "active_days": [0, 1, 2, 3, 4],
+      "typical_interval_hours": 24
+    }
+  },
+  "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?",
+  "default_threshold": 0.65
+}
+```
+
+## Field Reference
+
+### Top-Level Fields
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `module_id` | string | Yes | Unique identifier for this module |
+| `cluster` | string | Yes | Cluster name for grouping related modules |
+| `version` | string | Yes | Fingerprint schema version |
+| `question_template` | string | Yes | Template for Layer 3 question formation |
+| `default_threshold` | float | Yes | Escalation threshold (0.0–1.0) |
+| `signal_priors` | object | Yes | Signal-specific priors (see below) |
+
+<Warning>
+`question_template` **must** contain the `{location}` placeholder. This is validated at parse time.
+</Warning>
+
+### Signal Priors: Filesystem
+
+```json
+"filesystem": {
+  "watch_directories": ["~/Downloads", "~/Documents"],
+  "relevant_extensions": [".pdf", ".docx", ".pptx"],
+  "irrelevant_extensions": [".exe", ".zip", ".mp3"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `watch_directories` | list[string] | Directories to monitor. `~` is expanded to home directory. |
+| `relevant_extensions` | list[string] | File extensions strongly associated with this module (positive examples) |
+| `irrelevant_extensions` | list[string] | File extensions NOT associated with this module (negative examples) |
+
+<Note>
+Extensions must start with `.` (e.g., `".pdf"`, not `"pdf"`). This is validated at parse time.
+</Note>
+
+### Signal Priors: Memory
+
+```json
+"memory": {
+  "watch_namespaces": ["/mem/homework/", "/mem/courses/"],
+  "high_relevance_keys": ["last_assignment", "due_date"]
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `watch_namespaces` | list[string] | Memory namespaces to monitor for writes/updates |
+| `high_relevance_keys` | list[string] | Specific keys within those namespaces that are highly relevant |
+
+<Info>
+**Future feature:** Memory signal priors are parsed and validated but not yet used by Layer 1 (Retina) in the current implementation.
+</Info>
+
+### Signal Priors: Time
+
+```json
+"time": {
+  "active_hours": [8, 22],
+  "active_days": [0, 1, 2, 3, 4],
+  "typical_interval_hours": 24
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `active_hours` | [int, int] | Hour range when this module is typically active (0–23, inclusive) |
+| `active_days` | list[int] | Days of week when active (0=Monday, 6=Sunday) |
+| `typical_interval_hours` | float | Expected time between activations (for relevance decay) |
+
+<Accordion title="Active hours encoding">
+The `active_hours` field is a **closed interval** `[start, end]` where both start and end are included:
+
+- `[8, 22]` means 8 AM through 10 PM (inclusive)
+- `[0, 23]` means all day (no hour preference)
+- Start must be ≤ end (no wrap-around support yet)
+</Accordion>
+
+## Parsing and Validation
+
+Fingerprints are parsed and validated using `parse_fingerprint()`:
+
+```python pulse/fingerprint.py
+def parse_fingerprint(raw: dict) -> ModuleFingerprint:
+    """
+    Parse and validate a raw fingerprint dict (as provided by a module at
+    registration time) into a ModuleFingerprint.
+
+    Raises ValueError with a descriptive message on any validation failure.
+    """
+    _require_keys(raw, ["module_id", "cluster", "version",
+                        "question_template", "default_threshold"])
+
+    module_id = _require_str(raw, "module_id")
+    cluster = _require_str(raw, "cluster")
+    version = _require_str(raw, "version")
+    question_template = _require_str(raw, "question_template")
+    default_threshold = _require_float_in_range(raw, "default_threshold", 0.0, 1.0)
+
+    # Validate question_template contains at least {location}
+    if "{location}" not in question_template:
+        raise ValueError(
+            "question_template must contain '{location}' placeholder, got: "
+            f"{question_template!r}"
+        )
+
+    # Parse signal priors...
+    return ModuleFingerprint(...)
+```
+
+<Warning>
+Validation is **strict**. Invalid fingerprints will raise `ValueError` with a descriptive error message. Always test your fingerprints during development.
+</Warning>
+
+## Cold-Start Initialization
+
+### Feature Slot Relevance Mask
+
+The fingerprint is converted to a **relevance mask** — a float32 array of length 16 (FEATURE_DIM) where each value indicates how much this module cares about that feature slot:
+
+```python pulse/fingerprint.py
+def slot_relevance_mask(self) -> np.ndarray:
+    """
+    Returns a float32 array of length FEATURE_DIM where each value is
+    in [0.0, 1.0] and indicates how much this module cares about that
+    feature slot. Used by limbic to initialise model weights with a
+    meaningful prior instead of random noise.
+
+    A value of 1.0 means the slot is directly relevant.
+    A value of 0.5 means the slot is weakly relevant or context-dependent.
+    A value of 0.0 means the slot is not relevant to this module.
+    """
+    mask = np.zeros(FEATURE_DIM, dtype=np.float32)
+
+    # [0] magnitude: relevant for all modules
+    mask[0] = 1.0
+
+    # [1] delta_type: highly relevant when filesystem events are expected
+    mask[1] = 1.0 if self.filesystem is not None else 0.5
+
+    # [2] source: always relevant (distinguishes event types)
+    mask[2] = 1.0
+
+    # [3–6] temporal cyclical features: relevant when time priors exist
+    if self.time is not None:
+        has_hour_pref = self.time.active_hours != (0, 23)
+        has_day_pref = len(self.time.active_days) < 7
+        hour_weight = 1.0 if has_hour_pref else 0.5
+        day_weight = 1.0 if has_day_pref else 0.5
+        mask[3] = hour_weight   # hour_sin
+        mask[4] = hour_weight   # hour_cos
+        mask[5] = day_weight    # dow_sin
+        mask[6] = day_weight    # dow_cos
+
+    # [7] minutes_since_last_activation: relevant when typical interval is declared
+    if self.time is not None:
+        mask[7] = 1.0
+
+    # [8–10] filesystem features
+    if self.filesystem is not None:
+        mask[8] = 1.0   # size_bytes log-normalised
+        mask[9] = 1.0   # directory_depth normalised
+        mask[10] = 1.0 if self.filesystem.relevant_extensions else 0.5
+
+    # [11–15] reserved (memory/network, not yet implemented)
+    return mask
+```
+
+### Weight Biasing Formula
+
+The mask is converted to a weight scale using:
+
+```
+scale[i] = 0.1 + 1.9 * mask[i]
+```
+
+| Mask Value | Scale | Meaning |
+|------------|-------|---------|
+| 0.0 | 0.1 | Nearly zeroed (irrelevant slot) |
+| 0.5 | 1.05 | Neutral (weakly relevant) |
+| 1.0 | 2.0 | Doubled (highly relevant) |
+
+This scale is applied to the LSTM's input-to-hidden weights during registration (see [Layer 2: Limbic](/architecture/layer2-limbic)).
+
+## Synthetic Training Examples
+
+**Future feature:** The architecture document specifies that fingerprints should be used to generate synthetic positive and negative training examples:
+
+> The fingerprint is converted into synthetic training examples (positive and negative) that are used to pre-train the cluster model before any real data exists.
+
+**Current implementation:** Only weight biasing is implemented. Synthetic example generation is planned for a future version.
+
+## Extension Hash Encoding
+
+File extensions are hashed using CRC32 for inclusion in the feature vector:
+
+```python pulse/fingerprint.py
+def relevant_extension_hashes(self) -> list[float]:
+    """
+    CRC32-based hash values for each relevant extension, normalised to
+    [0.0, 1.0) using the same formula as SignalEvent.to_feature_vector
+    slot [10]. Used by limbic to build positive synthetic examples.
+    """
+    if self.filesystem is None:
+        return []
+    return [
+        (zlib.crc32(ext.encode()) % 1000) / 1000.0
+        for ext in self.filesystem.relevant_extensions
+    ]
+```
+
+<Accordion title="Why CRC32 % 1000?">
+The CRC32 hash produces a 32-bit integer. To normalize to `[0.0, 1.0)`:
+
+1. Take `crc32(extension) % 1000` to get a value in `[0, 999]`
+2. Divide by 1000.0 to get a float in `[0.0, 0.999]`
+
+This matches the encoding used in `SignalEvent.to_feature_vector()` slot [10] (see [Layer 1: Retina](/architecture/layer1-retina)).
+</Accordion>
+
+## ModuleFingerprint Dataclass
+
+```python pulse/fingerprint.py
+@dataclass
+class ModuleFingerprint:
+    """
+    Parsed and validated representation of a module's signal fingerprint.
+
+    Constructed by parse_fingerprint(); never build directly from raw dicts.
+    """
+    module_id: str
+    cluster: str
+    version: str
+    question_template: str
+    default_threshold: float        # 0.0–1.0
+
+    filesystem: Optional[FilesystemPrior] = field(default=None)
+    memory: Optional[MemoryPrior] = field(default=None)
+    time: Optional[TimePrior] = field(default=None)
+```
+
+### Convenience Methods
+
+```python
+# Retina uses these to configure watchers
+fingerprint.watch_directories() -> list[str]
+fingerprint.watch_namespaces() -> list[str]
+
+# Layer 2 uses these for cold-start initialization
+fingerprint.slot_relevance_mask() -> np.ndarray
+fingerprint.relevant_extension_hashes() -> list[float]
+fingerprint.irrelevant_extension_hashes() -> list[float]
+
+# Layer 3 uses this for question formation
+fingerprint.question_template -> str
+fingerprint.default_threshold -> float
+```
+
+## Example Fingerprints
+
+### Homework Agent
+
+```json
+{
+  "module_id": "homework-agent",
+  "cluster": "academic",
+  "version": "1.0",
+  "signal_priors": {
+    "filesystem": {
+      "watch_directories": ["~/Downloads", "~/Documents/School"],
+      "relevant_extensions": [".pdf", ".docx", ".pptx", ".xlsx"],
+      "irrelevant_extensions": [".exe", ".zip", ".mp3", ".mp4"]
+    },
+    "time": {
+      "active_hours": [8, 22],
+      "active_days": [0, 1, 2, 3, 4],
+      "typical_interval_hours": 24
+    }
+  },
+  "question_template": "A new file appeared at {location}. Is this file related to a course assignment or homework?",
+  "default_threshold": 0.65
+}
+```
+
+### Email Monitor
+
+```json
+{
+  "module_id": "email-monitor",
+  "cluster": "communication",
+  "version": "1.0",
+  "signal_priors": {
+    "filesystem": {
+      "watch_directories": ["~/.mail/inbox"],
+      "relevant_extensions": [".eml", ".msg"],
+      "irrelevant_extensions": []
+    },
+    "time": {
+      "active_hours": [6, 23],
+      "active_days": [0, 1, 2, 3, 4, 5, 6],
+      "typical_interval_hours": 0.5
+    }
+  },
+  "question_template": "A new email arrived at {location}. Does it require immediate attention?",
+  "default_threshold": 0.70
+}
+```
+
+### Time-Only Agent
+
+```json
+{
+  "module_id": "standup-reminder",
+  "cluster": "productivity",
+  "version": "1.0",
+  "signal_priors": {
+    "time": {
+      "active_hours": [9, 10],
+      "active_days": [0, 1, 2, 3, 4],
+      "typical_interval_hours": 24
+    }
+  },
+  "question_template": "It's time for the daily standup. Should I remind the user?",
+  "default_threshold": 0.80
+}
+```
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Be Specific" icon="bullseye">
+    List all relevant extensions and watch only necessary directories.
+  </Card>
+  <Card title="Set Realistic Thresholds" icon="gauge">
+    Start with 0.65–0.70 and adjust based on false positive/negative rates.
+  </Card>
+  <Card title="Use Clear Templates" icon="message-lines">
+    Question templates should be specific to the module's domain.
+  </Card>
+  <Card title="Test Validation" icon="vial">
+    Always test fingerprints with `parse_fingerprint()` before deployment.
+  </Card>
+</CardGroup>
+
+## Validation Checklist
+
+Before deploying a fingerprint:
+
+- [ ] All required fields present (`module_id`, `cluster`, `version`, `question_template`, `default_threshold`)
+- [ ] `question_template` contains `{location}` placeholder
+- [ ] `default_threshold` is in range [0.0, 1.0]
+- [ ] All extensions start with `.` (e.g., `".pdf"`)
+- [ ] `active_hours` is `[start, end]` with start ≤ end
+- [ ] `active_days` contains only integers in [0, 6]
+- [ ] `watch_directories` paths exist on disk (or will be created)
+
+<Info>
+Use `parse_fingerprint()` during development to catch validation errors early. The parser provides detailed error messages.
+</Info>
+
+## Next Steps
+
+- Learn how fingerprints are used in [Layer 2: Limbic](/architecture/layer2-limbic) for cold-start initialization
+- Understand the [Layer 1: Retina](/architecture/layer1-retina) feature vector encoding
+- See how [Layer 3: Prefrontal](/architecture/layer3-prefrontal) uses question templates

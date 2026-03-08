@@ -1,0 +1,293 @@
+---
+title: Training Models
+description: Understand online learning in Pulse and how to provide training labels
+---
+
+## Overview
+
+Pulse uses **online learning** to continuously improve its relevance predictions. Unlike batch training, online learning updates models incrementally with each new labeled example, adapting to user behavior over time without requiring large datasets or retraining cycles.
+
+## How Online Learning Works
+
+The training loop operates in three stages:
+
+```
+ACTIVATION → FEEDBACK → WEIGHT UPDATE
+     │            │            │
+     │            │            └─ limbic.update_weights()
+     │            └────────────── record_feedback() (explicit)
+     │                            or infer_label() (implicit)
+     └─────────────────────────── record_activation()
+```
+
+### 1. Activation Recording
+
+When Layer 2 scores an event above threshold and Layer 3 escalates to the kernel, Pulse records an **activation**:
+
+```python
+# Happens automatically in pulse/registry.py:152
+activation_id = pulse.record_activation(module_id, window)
+```
+
+Each activation includes:
+- `module_id`: Which module triggered
+- `window`: The `SignalEvent` objects that contributed
+- `timestamp`: When the activation occurred
+- `label`: Initially `None`, filled in later
+
+The activation is stored in memory with a unique ID for later feedback attachment.
+
+### 2. Feedback Collection
+
+Pulse waits up to **5 minutes** for feedback. Feedback can be:
+
+**Explicit** (preferred):
+```python
+# After the agent handles the activation
+pulse.record_feedback(activation_id, label=1.0)  # Useful
+pulse.record_feedback(activation_id, label=0.0)  # Not useful
+```
+
+**Implicit** (fallback after 5 minutes):
+```python
+# Automatically inferred if no explicit feedback arrives
+# See pulse/training.py:98-111
+if record.window:
+    label = 0.8  # Assumed useful
+else:
+    label = 0.2  # Assumed not useful
+```
+
+<Note>
+The implicit labeling heuristic is basic in the current implementation. It assumes activations with non-empty windows are useful (0.8) and those without are not (0.2). Future versions will inspect agent output to determine actual usefulness.
+</Note>
+
+### 3. Weight Updates
+
+Periodically (2 seconds after each activation), Pulse drains the training buffer:
+
+```python
+# Happens automatically via threading.Timer in pulse/registry.py:163
+pulse.drain_training()
+```
+
+The `drain()` method:
+1. Finds all activations with labels (explicit or inferred)
+2. Calls `limbic.update_weights(module_id, window, label)` for each
+3. Removes processed activations from the buffer
+
+<Steps>
+
+## Providing Explicit Feedback
+
+### Step 1: Capture the activation ID
+
+When your escalation handler is called, capture the activation ID from the context:
+
+```python
+def on_escalation(decision: EscalationDecision):
+    # The decision contains the triggering events
+    # You need to track which activation_id corresponds to this decision
+    # This is typically done in the kernel layer
+    
+    # Process the activation
+    result = agent.handle(decision.question)
+    
+    # Later, provide feedback
+    pulse.record_feedback(activation_id, label=calculate_label(result))
+```
+
+<Warning>
+The current architecture requires the kernel to track activation IDs. The `EscalationDecision` object doesn't include the activation ID directly. This is a design consideration for future enhancement.
+
+See `pulse/prefrontal.py` for the `EscalationDecision` structure.
+</Warning>
+
+### Step 2: Calculate a label
+
+Labels must be floats in the range `[0.0, 1.0]`:
+
+```python
+def calculate_label(result):
+    """
+    Example heuristic based on agent output.
+    """
+    if result.action_taken:
+        # Agent took action (wrote memory, ran tool)
+        return 1.0
+    elif result.confidence_score > 0.7:
+        # Agent was confident but took no action
+        return 0.5
+    else:
+        # Agent was not confident or dismissed the question
+        return 0.0
+```
+
+**Label interpretation:**
+- `1.0`: Highly relevant, exactly what the user wanted
+- `0.7–0.9`: Relevant and useful
+- `0.3–0.6`: Somewhat relevant but not critical
+- `0.0–0.2`: Not relevant, false positive
+
+### Step 3: Submit feedback
+
+```python
+pulse.record_feedback(activation_id, label)
+```
+
+If the `activation_id` is unknown (already drained or never existed), the method silently ignores it. No exception is raised.
+
+</Steps>
+
+## Understanding the Training Buffer
+
+The `TrainingBuffer` class (`pulse/training.py`) manages the lifecycle of activation records:
+
+```python
+@dataclass
+class ActivationRecord:
+    module_id: str
+    window: list[SignalEvent]
+    timestamp: float
+    label: float | None  # None until feedback arrives
+```
+
+**Buffer states:**
+
+| State | Label | Age | Action |
+|-------|-------|-----|--------|
+| Waiting | `None` | < 5 min | Keep in buffer |
+| Labeled | Set | Any | Train and remove |
+| Expired | `None` | ≥ 5 min | Infer label, train, remove |
+
+**Implementation reference:** See `pulse/training.py:71-95` for the drain logic.
+
+## Model Architecture
+
+Each cluster uses a small LSTM or Temporal Convolutional Network (TCN):
+
+- **Input**: Sliding window of recent `SignalEvent` feature vectors (16-dimensional)
+- **Hidden size**: 32–64 units
+- **Output**: Single float (relevance score, 0.0–1.0) via sigmoid
+- **Parameters**: ~50k–200k (well under 1M)
+- **Inference time**: < 5ms on CPU
+
+Models are stored in `~/.macroa/pulse/models/` and automatically saved when `pulse.stop()` is called.
+
+## Cold Start: Synthetic Priors
+
+On day one, before any real data exists, Pulse generates synthetic training examples from the fingerprint to initialize model weights:
+
+```python
+# Happens automatically in limbic.py during register()
+fingerprint = parse_fingerprint(raw)
+slot_mask = fingerprint.slot_relevance_mask()  # Which features matter
+extension_hashes = fingerprint.relevant_extension_hashes()  # Positive examples
+```
+
+**Feature slot relevance mask** (`pulse/fingerprint.py:133-179`):
+- `1.0`: Feature is directly relevant to this module
+- `0.5`: Feature is weakly relevant
+- `0.0`: Feature is not relevant
+
+This mask weights the model's attention to different features from the start, ensuring better-than-random performance immediately.
+
+## Monitoring Training Progress
+
+While Pulse doesn't expose a training metrics API in the current implementation, you can observe:
+
+1. **Escalation frequency**: If the model learns well, false positives decrease over time
+2. **Relevance scores**: Check `decision.confidence` in your escalation handler
+3. **Model files**: Watch for updates in `~/.macroa/pulse/models/`
+
+## Advanced: Manual Weight Updates
+
+If you want to train on historical data or batch examples:
+
+```python
+from pulse.retina import SignalEvent
+
+# Create synthetic or historical events
+events = [
+    SignalEvent(
+        source="filesystem",
+        location="/home/user/Downloads/hw3.pdf",
+        delta_type="created",
+        magnitude=1.0,
+        timestamp=time.time(),
+        features={
+            "path": "/home/user/Downloads/hw3.pdf",
+            "extension": ".pdf",
+            "size_bytes": 204800,
+            "directory_depth": 3,
+            "filename_tokens": ["hw3"]
+        }
+    )
+]
+
+# Directly update weights (bypasses activation recording)
+pulse._limbic.update_weights("homework-agent", events, label=1.0)
+```
+
+<Warning>
+Direct weight updates bypass the training buffer and don't respect the feedback timeout. Only use this for offline training scenarios, not during normal operation.
+</Warning>
+
+## Troubleshooting
+
+<AccordionGroup>
+<Accordion title="ValueError: label must be in [0.0, 1.0]">
+Labels must be floats between 0.0 and 1.0 inclusive. Check your label calculation logic.
+
+```python
+# Bad
+pulse.record_feedback(activation_id, 5)  # Too high
+
+# Good
+pulse.record_feedback(activation_id, 0.8)
+```
+</Accordion>
+
+<Accordion title="Feedback seems to have no effect">
+Check timing. Feedback must arrive within 5 minutes of activation, and the training drain happens 2 seconds after activation. If you submit feedback after the drain, it won't be processed.
+
+To force immediate training:
+```python
+pulse.drain_training()  # Manually trigger drain
+```
+</Accordion>
+
+<Accordion title="Where are model weights stored?">
+Model weights are saved to `model_save_path` when `pulse.stop()` is called:
+
+```python
+pulse = PulseRegistry(
+    watch_dirs=[],
+    model_save_path=Path("~/.macroa/pulse/models")
+)
+```
+
+If `model_save_path` is `None`, weights are not persisted.
+</Accordion>
+
+<Accordion title="Can I retrain a model from scratch?">
+Yes, delete the model file for that cluster:
+
+```bash
+rm ~/.macroa/pulse/models/academic.pt
+```
+
+When the cluster is next registered, it will reinitialize with synthetic priors from the fingerprint.
+</Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+<Card title="Monitoring Signals" icon="chart-line" href="/guides/monitoring-signals">
+Subscribe to events and debug signal flow
+</Card>
+<Card title="Integration" icon="plug" href="/guides/integration">
+Integrate Pulse into your agent system
+</Card>
+</CardGroup>

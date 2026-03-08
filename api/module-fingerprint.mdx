@@ -1,0 +1,201 @@
+---
+title: ModuleFingerprint
+description: Signal priors and cold-start configuration for modules
+---
+
+## Overview
+
+`ModuleFingerprint` is the structured description a module provides at registration time. It serves two purposes:
+
+1. **Runtime routing:** Tells Retina which directories and memory namespaces to watch, and tells Layer 3 which question template to use.
+2. **Cold-start prior:** Tells Layer 2 (Limbic) which feature vector slots matter for this module and what values to expect, so the cluster model starts with a meaningful bias instead of random weights.
+
+## Import
+
+```python
+from pulse.fingerprint import ModuleFingerprint, parse_fingerprint
+```
+
+## Class Definition
+
+`ModuleFingerprint` is a dataclass defined in `pulse/fingerprint.py:75`. It should be constructed via `parse_fingerprint()`, not directly.
+
+## Attributes
+
+<ResponseField name="module_id" type="str" required>
+  Unique identifier for the module (e.g., `"homework_watcher"`).
+</ResponseField>
+
+<ResponseField name="cluster" type="str" required>
+  Logical grouping for related modules (e.g., `"homework"`).
+</ResponseField>
+
+<ResponseField name="version" type="str" required>
+  Semantic version string (e.g., `"1.0.0"`).
+</ResponseField>
+
+<ResponseField name="question_template" type="str" required>
+  Template string for escalation questions. Must contain `{location}` placeholder.
+  
+  Example: `"Should I check the new file at {location}?"`
+</ResponseField>
+
+<ResponseField name="default_threshold" type="float" required>
+  Default escalation threshold in range [0.0, 1.0]. Typically 0.65–0.75.
+</ResponseField>
+
+<ResponseField name="filesystem" type="FilesystemPrior | None">
+  Filesystem-specific signal priors. Contains:
+  - `watch_directories` (list[str]): Expanded absolute paths
+  - `relevant_extensions` (list[str]): e.g., `[".pdf", ".docx"]`
+  - `irrelevant_extensions` (list[str]): e.g., `[".tmp", ".log"]`
+</ResponseField>
+
+<ResponseField name="memory" type="MemoryPrior | None">
+  Memory-namespace-specific priors. Contains:
+  - `watch_namespaces` (list[str]): e.g., `["/mem/homework/"]`
+  - `high_relevance_keys` (list[str]): e.g., `["due_date"]`
+</ResponseField>
+
+<ResponseField name="time" type="TimePrior | None">
+  Time-based signal priors. Contains:
+  - `active_hours` (tuple[int, int]): (start_hour, end_hour), both 0–23 inclusive
+  - `active_days` (list[int]): 0=Monday … 6=Sunday
+  - `typical_interval_hours` (float): Expected gap between activations
+</ResponseField>
+
+## Methods
+
+### watch_directories
+
+```python
+def watch_directories(self) -> list[str]
+```
+
+Returns all expanded watch directories declared by this module. Returns empty list if no filesystem prior is set.
+
+### watch_namespaces
+
+```python
+def watch_namespaces(self) -> list[str]
+```
+
+Returns all memory namespaces declared by this module. Returns empty list if no memory prior is set.
+
+### slot_relevance_mask
+
+```python
+def slot_relevance_mask(self) -> np.ndarray
+```
+
+Returns a float32 array of length `FEATURE_DIM` (16) where each value indicates how much this module cares about that feature slot.
+
+**Values:**
+- `1.0`: Slot is directly relevant
+- `0.5`: Slot is weakly relevant or context-dependent
+- `0.0`: Slot is not relevant to this module
+
+Used by LimbicLayer to initialize model weights with a meaningful prior.
+
+**Returns:**
+- `np.ndarray`: float32 mask array of length 16
+
+### relevant_extension_hashes
+
+```python
+def relevant_extension_hashes(self) -> list[float]
+```
+
+Returns CRC32-based hash values for each relevant extension, normalized to [0.0, 1.0) using the same formula as SignalEvent feature slot [10].
+
+### irrelevant_extension_hashes
+
+```python
+def irrelevant_extension_hashes(self) -> list[float]
+```
+
+Same encoding for irrelevant extensions. Used to build negative training examples.
+
+### active_hour_range_encoded
+
+```python
+def active_hour_range_encoded(self) -> Optional[tuple[float, float, float, float]]
+```
+
+Returns `(start_sin, start_cos, end_sin, end_cos)` for the declared active hour window, or `None` if no time prior is set.
+
+## Parsing and Validation
+
+### parse_fingerprint
+
+```python
+def parse_fingerprint(raw: dict) -> ModuleFingerprint
+```
+
+Parse and validate a raw fingerprint dictionary into a `ModuleFingerprint` object.
+
+<ParamField path="raw" type="dict" required>
+  Raw fingerprint dictionary with required keys:
+  - `module_id` (str)
+  - `cluster` (str)
+  - `version` (str)
+  - `question_template` (str): Must contain `{location}` placeholder
+  - `default_threshold` (float): Must be in [0.0, 1.0]
+  - `signal_priors` (dict, optional): Contains `filesystem`, `memory`, and/or `time` sub-dicts
+</ParamField>
+
+**Raises:**
+- `ValueError`: On any validation failure with a descriptive message
+
+**Example:**
+
+```python
+from pulse.fingerprint import parse_fingerprint
+
+raw = {
+    "module_id": "homework_watcher",
+    "cluster": "homework",
+    "version": "1.0.0",
+    "question_template": "Should I check the new homework file at {location}?",
+    "default_threshold": 0.7,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Documents/Homework"],
+            "relevant_extensions": [".pdf", ".docx"],
+            "irrelevant_extensions": [".tmp"],
+        },
+        "time": {
+            "active_hours": [9, 21],
+            "active_days": [0, 1, 2, 3, 4],  # Monday–Friday
+            "typical_interval_hours": 24.0,
+        },
+    },
+}
+
+fingerprint = parse_fingerprint(raw)
+print(fingerprint.module_id)  # "homework_watcher"
+print(fingerprint.watch_directories())  # ["/home/user/Documents/Homework"]
+```
+
+## Feature Vector Slot Layout
+
+The 16-dimensional feature vector used by Limbic models has the following layout:
+
+- `[0]`: magnitude
+- `[1]`: delta_type encoded
+- `[2]`: source encoded
+- `[3]`: hour_sin
+- `[4]`: hour_cos
+- `[5]`: dow_sin
+- `[6]`: dow_cos
+- `[7]`: minutes_since_last_activation
+- `[8]`: size_bytes log-normalized
+- `[9]`: directory_depth normalized
+- `[10]`: file extension hash
+- `[11–15]`: reserved (memory / network, future)
+
+## See Also
+
+- [PulseRegistry](/api/pulse-registry) — Registers modules and fingerprints
+- [LimbicLayer](/api/limbic) — Uses fingerprints for cold-start weight biasing
+- [Retina](/api/retina) — Uses watch_directories() to extend filesystem monitoring

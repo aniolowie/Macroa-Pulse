@@ -1,0 +1,358 @@
+---
+title: Proactive vs Reactive
+description: Why Pulse represents a fundamental shift in agent design
+---
+
+## The Reactive Paradigm
+
+Every AI agent framework today — LangChain, AutoGen, CrewAI, OpenAI Agents — follows the same pattern:
+
+```
+TRIGGER → AGENT → ACTION → DONE
+```
+
+The agent is a **function**. It receives input, produces output, and stops. Without input, the agent does nothing.
+
+### Reactive Triggers
+
+<CardGroup cols={2}>
+  <Card title="User Messages" icon="message">
+    User types a command or question in chat
+    
+    **Limitation:** Requires user to remember to ask
+  </Card>
+  
+  <Card title="Cron Jobs" icon="clock">
+    Scheduled tasks run at fixed intervals
+    
+    **Limitation:** Static schedule, can't adapt to context
+  </Card>
+  
+  <Card title="Webhooks" icon="bell">
+    External service sends a notification
+    
+    **Limitation:** Requires external service integration
+  </Card>
+  
+  <Card title="API Calls" icon="code">
+    Another system invokes the agent programmatically
+    
+    **Limitation:** Still externally triggered
+  </Card>
+</CardGroup>
+
+All of these require the **developer** to anticipate when the agent should act and write explicit triggers. The agent itself has no internal drive.
+
+### The Developer's Burden
+
+Building a useful reactive agent requires exhaustive anticipation:
+
+```yaml
+# Developer must write explicit triggers for every scenario
+
+triggers:
+  - cron: "0 9 * * 1"  # Check homework every Monday at 9am
+  - cron: "0 21 * * 1-5"  # Check homework weekdays at 9pm
+  - webhook: "calendar_event_created"
+  - webhook: "email_received_from:professor"
+  - file_watch: "~/Downloads/*.pdf"
+  - file_watch: "~/Documents/Courses/**/*.docx"
+```
+
+This is brittle:
+
+- **Miss a scenario**, and the agent fails silently
+- **Too many triggers**, and you get false activations
+- **Static timing** can't adapt to user behavior changes
+- **No learning** — equally accurate (or inaccurate) forever
+
+## The Proactive Paradigm
+
+Pulse inverts this model:
+
+```
+CONTINUOUS PERCEPTION → PATTERN RECOGNITION → SELECTIVE ACTIVATION → SCOPED QUESTION
+```
+
+The agent has an **internal perceptual loop**. It continuously monitors the environment, learns patterns from usage, and decides when something deserves attention.
+
+### Key Differences
+
+| Aspect | Reactive | Proactive (Pulse) |
+|--------|----------|------------------|
+| **Activation** | External trigger required | Internal pattern recognition |
+| **Timing** | Fixed schedules or events | Learned from usage patterns |
+| **Context** | Agent starts with blank slate | Agent receives scoped question |
+| **Learning** | Static rules forever | Improves with every activation |
+| **Cost** | LLM called on trigger | No LLM until all filters pass |
+| **Developer work** | Anticipate all scenarios | Define signal preferences |
+
+## A Concrete Example
+
+### Scenario: Homework Management
+
+A student wants an agent that helps track homework assignments.
+
+### Reactive Approach
+
+**Developer writes:**
+
+```python
+# Cron job: check for homework every day at 9pm
+@cron("0 21 * * *")
+def check_homework():
+    agent.activate(
+        prompt="Check if there are any new homework assignments."
+    )
+
+# File watcher: watch Downloads for PDFs
+@file_created("~/Downloads/*.pdf")
+def on_pdf_created(path):
+    agent.activate(
+        prompt=f"A PDF appeared at {path}. Is it homework?"
+    )
+```
+
+**Problems:**
+
+1. **9pm is arbitrary** — what if the student does homework at 11pm on Thursdays?
+2. **Every PDF triggers the agent** — course reading, unrelated documents, receipts
+3. **No learning** — if the student never has homework on weekends, the cron still fires
+4. **No context from past activations** — each activation starts fresh
+
+### Proactive Approach (Pulse)
+
+**Developer writes:**
+
+```json
+{
+  "module_id": "homework-agent",
+  "signal_priors": {
+    "filesystem": {
+      "watch_directories": ["~/Downloads", "~/Documents"],
+      "relevant_extensions": [".pdf", ".docx"],
+      "irrelevant_extensions": [".zip", ".exe"]
+    },
+    "time": {
+      "active_hours": [18, 23],
+      "active_days": [0, 1, 2, 3, 4]
+    }
+  },
+  "question_template": "A new file appeared at {location}. Is this file related to a course assignment?"
+}
+```
+
+**What happens:**
+
+**Week 1:** Student downloads `hw1.pdf` at 9:15pm on Tuesday.
+
+- Retina detects file creation
+- Limbic scores based on fingerprint priors: `0.68` (above threshold)
+- Prefrontal forms question: *"A new file appeared at ~/Downloads/hw1.pdf. Is this file related to a course assignment?"*
+- Agent activates, examines file, finds "CS 242 Homework 1", organizes it
+- **Implicit positive label**: agent took action
+- Limbic updates weights
+
+**Week 2:** Student downloads `receipt.pdf` at 3pm on Saturday.
+
+- Retina detects file creation
+- Limbic scores: `0.32` (below threshold — wrong time, wrong day, no prior pattern)
+- Agent does **not** activate
+- No wasted LLM call
+
+**Week 5:** Student downloads `hw4.pdf` at 11pm on Thursday (new pattern).
+
+- Retina detects file creation
+- Limbic scores: `0.71` (learned that Thursday 11pm is relevant from past activations)
+- Agent activates with scoped question
+- **The system adapted** — it learned the student's Thursday pattern without explicit programming
+
+**Week 10:** Time tick fires at 11pm on Thursday (no file event).
+
+- Retina emits time signal: `hour_sin/cos` for 11pm, `dow_sin/cos` for Thursday
+- Limbic recognizes the pattern: "Thursday 11pm often precedes homework activity"
+- Score: `0.69`
+- Prefrontal forms broader question: *"It's Thursday evening. Are there any pending course assignments that need attention?"*
+- Agent proactively checks for upcoming deadlines
+- **Genuinely proactive** — no file event, no user message, just learned temporal pattern
+
+## Why Existing Approaches Fail at Proactivity
+
+### Cron Jobs
+
+**Problem:** Static schedules can't adapt to context.
+
+```bash
+# Check homework every day at 9pm
+0 21 * * * /usr/bin/homework-agent
+```
+
+- Fires on weekends when student has no homework
+- Fires during exam week when patterns change
+- Fires during winter break
+- Never learns that the student actually does homework at 11pm on Thursdays
+
+### Polling Loops
+
+**Problem:** Continuous LLM calls are economically absurd.
+
+```python
+while True:
+    response = llm.complete(
+        "Is there anything I should be doing right now?"
+    )
+    if response.should_act:
+        agent.activate(response.action)
+    time.sleep(60)
+```
+
+- Cost: ~$10/minute for capable models
+- $14,400/day
+- Economically impossible for any real-world deployment
+
+### Event-Driven Architecture
+
+**Problem:** Still reactive — requires external events.
+
+```python
+@webhook("file_created")
+def on_file(event):
+    agent.activate(f"File created: {event.path}")
+```
+
+- Every file creation triggers the agent (noisy)
+- No temporal pattern learning
+- No learned filtering
+- Agent wakes with vague context
+
+## What Pulse Enables
+
+### 1. Temporal Pattern Learning
+
+Pulse learns **when** things tend to happen:
+
+- Homework appears on weekday evenings, not weekends
+- Calendar updates on Sunday night often precede busy weeks
+- Email from specific senders at specific times correlates with important tasks
+
+Reactive systems require developers to hardcode these patterns. Pulse **discovers them from usage**.
+
+### 2. Contextual Filtering
+
+Not all PDFs are homework. Not all time ticks matter. Pulse learns **which signals in which contexts** are meaningful:
+
+- A `.pdf` in Downloads at 9pm on Tuesday after a memory update to `/mem/courses/` → relevant
+- A `.pdf` in Downloads at 2pm on Saturday with no recent memory activity → noise
+
+Reactive systems trigger on file type alone. Pulse considers **sequences and context**.
+
+### 3. Scoped Activation
+
+When Pulse wakes the agent, it doesn't say "something happened." It asks a **specific question**:
+
+<Tip>
+❌ **Reactive:** "A file was created. Figure out if it matters."
+
+✓ **Proactive:** "A new file appeared at ~/Downloads/hw3.pdf. Is this file related to a course assignment?"
+</Tip>
+
+The agent receives:
+
+- **What changed**: specific file path
+- **Why it might matter**: question template based on learned patterns  
+- **Confidence**: the Limbic score that triggered activation
+- **Context**: the sequence of events that led here
+
+This dramatically reduces the reasoning work required. The agent isn't searching for relevance — it's answering a focused question.
+
+### 4. Economic Viability
+
+Pulse achieves proactivity at **near-zero marginal cost**:
+
+- Layer 1 (Retina): deterministic, ~0 CPU
+- Layer 2 (Limbic): under 5ms per inference on CPU
+- Layer 3 (Prefrontal): string interpolation, ~0
+
+Total cost per day: **electricity, not tokens**
+
+This makes continuous proactive monitoring economically viable for personal agents.
+
+## The Cognitive Analogy
+
+Consider how you, as a human, notice things without consciously searching:
+
+### Without Proactive Perception
+
+You would need to:
+
+1. Set a phone alarm: "Check for homework" every day at 9pm
+2. Consciously scan your Downloads folder every hour
+3. Manually review your calendar for upcoming deadlines
+4. Remember to check email from professors
+
+This is exhausting and unreliable. You will forget. Alarms are arbitrary. You have no context.
+
+### With Proactive Perception (How Your Brain Works)
+
+You see a file on your desktop:
+
+- Visual cortex (Retina): "new object detected"
+- Pattern recognition (Limbic): "looks like a PDF, Downloads folder, evening, weekday — familiar pattern"
+- Conscious thought (Prefrontal): *"Is this the homework assignment for CS 242?"*
+
+This happens **before** you decide to think about it. Your brain pre-filters and pre-interprets, so conscious reasoning only engages when necessary.
+
+**Pulse applies this same hierarchy to AI agents.**
+
+## Limitations
+
+Proactive perception is not a silver bullet. Pulse has known limitations:
+
+### Rare Events
+
+Events that occur once a year have sparse training data. The Limbic Filter will have low confidence. Module fingerprints provide a starting prior, but rare events remain challenging.
+
+**Mitigation:** Combine Pulse with explicit triggers for known rare events (e.g., annual tax deadline).
+
+### Adversarial Signals
+
+A malicious file placed in a watched directory could trigger false activations.
+
+**Mitigation:** Capability-based security in the Macroa kernel. Modules only watch directories they explicitly declare. Sensitive directories are protected.
+
+### Cold Start
+
+On day one, Pulse has no training data. It relies entirely on module fingerprints for priors.
+
+**Mitigation:** Fingerprints are designed to provide reasonable day-one behavior. Over time, the models refine and improve.
+
+## Philosophical Shift
+
+Reactive agents are **tools**. You use them when you remember to.
+
+Proactive agents are **assistants**. They notice things you might miss and bring them to your attention.
+
+This shift requires fundamentally different architecture:
+
+- **Reactive:** Optimize for response latency when triggered
+- **Proactive:** Optimize for perception accuracy over time
+
+- **Reactive:** Agent is stateless between activations
+- **Proactive:** Agent has continuous perceptual state
+
+- **Reactive:** Developer anticipates scenarios
+- **Proactive:** System learns scenarios from usage
+
+Pulse represents the latter. It's not an incremental improvement on reactive design — it's a different paradigm.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Three-Layer Architecture" icon="layer-group" href="/concepts/three-layer-architecture">
+    Learn how Pulse achieves proactivity efficiently
+  </Card>
+  
+  <Card title="Getting Started" icon="rocket" href="/quickstart">
+    Build your first proactive agent with Pulse
+  </Card>
+</CardGroup>

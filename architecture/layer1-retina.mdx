@@ -1,0 +1,233 @@
+---
+title: "Layer 1: Retina"
+description: "Deterministic event detection and SignalEvent streaming"
+---
+
+## Overview
+
+The Retina is Layer 1 of the Pulse architecture. It detects changes in the environment and emits structured `SignalEvent` objects when something changes. **It does not interpret, reason, or make decisions** — it only detects and emits.
+
+<Info>
+**Cost:** Near-zero CPU usage, always running in background threads
+</Info>
+
+## Architecture
+
+The Retina runs in its own thread and monitors multiple signal sources:
+
+| Signal Source | What Is Detected | How |
+|---------------|------------------|-----|
+| File system | New, modified, deleted files in monitored directories | `watchdog` library (inotify on Linux) |
+| Memory namespaces | Facts written/updated in monitored namespaces | Internal event hook on memory driver |
+| Time | Cyclical time features: hour of day, day of week, time since last activation | 60-second tick |
+| Network (v2) | HTTP endpoint response hash changes | Polling with hash comparison |
+
+## SignalEvent Structure
+
+Every detected change is converted into a `SignalEvent`:
+
+```python pulse/retina.py
+@dataclass
+class SignalEvent:
+    source: str       # "filesystem" | "memory" | "time" | "network"
+    location: str     # path, namespace, or endpoint
+    delta_type: str   # "created" | "modified" | "deleted" | "tick"
+    magnitude: float  # 0.0–1.0, normalised change size
+    timestamp: float  # unix timestamp
+    features: dict    # source-specific features
+```
+
+### Filesystem Features
+
+When a file is created, modified, or deleted:
+
+```python
+{
+    "path": "/home/user/Downloads/hw3.pdf",
+    "extension": ".pdf",
+    "size_bytes": 204800,
+    "directory_depth": 3,
+    "filename_tokens": ["hw3"]  # split on non-alphanumeric
+}
+```
+
+### Time Tick Features
+
+Every 60 seconds, the Retina emits a time tick with cyclically-encoded temporal features:
+
+```python
+{
+    "hour_sin": 0.866,   # sin(2π * hour / 24) — cyclical encoding
+    "hour_cos": 0.5,
+    "dow_sin": 0.782,    # sin(2π * day_of_week / 7)
+    "dow_cos": 0.623,
+    "minutes_since_last_activation": 847
+}
+```
+
+<Note>
+Cyclical encoding (sin/cos pairs) ensures that 11 PM and 1 AM are close in feature space, even though numerically they are 22 hours apart.
+</Note>
+
+## Feature Vector Encoding
+
+Each `SignalEvent` is converted to a fixed-length feature vector for Layer 2 (Limbic):
+
+```python pulse/retina.py
+FEATURE_DIM = 16
+
+def to_feature_vector(self) -> np.ndarray:
+    is_fs = self.source == "filesystem"
+    is_time = self.source == "time"
+
+    v = [
+        float(self.magnitude),                                    # [0]
+        float(_DELTA_TYPE_ENC.get(self.delta_type, 0.0)),        # [1]
+        float(_SOURCE_ENC.get(self.source, 0.0)),                # [2]
+        float(self.features.get("hour_sin", 0.0)) if is_time else 0.0,     # [3]
+        float(self.features.get("hour_cos", 0.0)) if is_time else 0.0,     # [4]
+        float(self.features.get("dow_sin", 0.0)) if is_time else 0.0,      # [5]
+        float(self.features.get("dow_cos", 0.0)) if is_time else 0.0,      # [6]
+        float(self.features.get("minutes_since_last_activation", 0.0)) if is_time else 0.0,  # [7]
+        _normalise_size(self.features.get("size_bytes", 0)) if is_fs else 0.0,  # [8]
+        min(float(self.features.get("directory_depth", 0)) / 10.0, 1.0) if is_fs else 0.0,  # [9]
+        (zlib.crc32(self.features.get("extension", "").encode()) % 1000) / 1000.0 if is_fs else 0.0,  # [10]
+        0.0, 0.0, 0.0, 0.0, 0.0,  # [11–15] reserved for memory/network
+    ]
+
+    return np.array(v, dtype=np.float32)
+```
+
+<Accordion title="Feature slot reference">
+- **[0]** magnitude: 0.0–1.0, normalised change size
+- **[1]** delta_type: created=1.0, tick=0.75, modified=0.5, deleted=0.0
+- **[2]** source: filesystem=1.0, time=0.5, memory=0.25, network=0.0
+- **[3–4]** hour_sin, hour_cos: cyclical hour encoding
+- **[5–6]** dow_sin, dow_cos: cyclical day-of-week encoding
+- **[7]** minutes_since_last_activation: time elapsed since last agent wake
+- **[8]** size_bytes: log-normalised file size
+- **[9]** directory_depth: path depth / 10.0
+- **[10]** extension: CRC32 hash of file extension
+- **[11–15]** reserved for memory/network features (future)
+</Accordion>
+
+## Implementation Details
+
+### Filesystem Watching
+
+The Retina uses Python's `watchdog` library with `inotify` (Linux) for efficient filesystem monitoring:
+
+```python pulse/retina.py
+class _FSHandler(FileSystemEventHandler):
+    def __init__(self, signal_queue: queue.Queue) -> None:
+        super().__init__()
+        self._queue = signal_queue
+
+    def _emit(self, path: str, delta_type: str) -> None:
+        features = _fs_features(path)
+        if delta_type == "modified":
+            magnitude = _normalise_size(features["size_bytes"])
+        else:
+            magnitude = 1.0
+        self._queue.put(SignalEvent(
+            source="filesystem",
+            location=path,
+            delta_type=delta_type,
+            magnitude=magnitude,
+            timestamp=time.time(),
+            features=features,
+        ))
+```
+
+<Warning>
+The Retina only watches directories declared in module fingerprints. It does **not** watch the entire filesystem.
+</Warning>
+
+### Time Tick Loop
+
+The time tick runs in a dedicated daemon thread and fires every 60 seconds:
+
+```python pulse/retina.py
+def _tick_loop(self) -> None:
+    while not self._stop_event.wait(self.TICK_INTERVAL):
+        self._emit_tick()
+
+def _emit_tick(self) -> None:
+    now = time.time()
+    lt = time.localtime(now)
+    hour = lt.tm_hour
+    dow = lt.tm_wday  # 0 = Monday, matching Python convention
+
+    if self._get_minutes_since_activation is not None:
+        minutes_since = self._get_minutes_since_activation()
+    else:
+        minutes_since = (now - self._start_time) / 60.0
+
+    features = {
+        "hour_sin": math.sin(2 * math.pi * hour / 24),
+        "hour_cos": math.cos(2 * math.pi * hour / 24),
+        "dow_sin": math.sin(2 * math.pi * dow / 7),
+        "dow_cos": math.cos(2 * math.pi * dow / 7),
+        "minutes_since_last_activation": round(minutes_since, 2),
+    }
+
+    self._queue.put(SignalEvent(
+        source="time",
+        location="tick",
+        delta_type="tick",
+        magnitude=1.0,
+        timestamp=now,
+        features=features,
+    ))
+```
+
+## Public API
+
+```python pulse/retina.py
+class Retina:
+    TICK_INTERVAL: int = 60  # seconds
+
+    def __init__(
+        self,
+        watch_dirs: list[str],
+        signal_queue: queue.Queue,
+        get_minutes_since_activation: Optional[Callable[[], float]] = None,
+    ) -> None:
+        """
+        Args:
+            watch_dirs: Directories to monitor. Non-existent directories are skipped.
+            signal_queue: Thread-safe queue that receives SignalEvent objects.
+            get_minutes_since_activation: Optional callable returning minutes
+                elapsed since last agent activation. Defaults to time since start().
+        """
+
+    def start(self) -> None:
+        """Start filesystem observer and time-tick thread. Non-blocking."""
+
+    def stop(self) -> None:
+        """Gracefully stop all background threads."""
+
+    def add_watch_dir(self, path: str) -> None:
+        """Add a directory to the watchdog observer at runtime."""
+```
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Stateless" icon="circle-dot">
+    Layer 1 has no inter-event state. It only emits, never remembers.
+  </Card>
+  <Card title="Deterministic" icon="gears">
+    No neural networks, no LLMs. Pure filesystem and time-based detection.
+  </Card>
+  <Card title="Sparse Output" icon="filter">
+    Only emits when something actually changes. No polling waste.
+  </Card>
+  <Card title="Thread-Safe" icon="lock">
+    All SignalEvents are placed on a thread-safe queue for Layer 2.
+  </Card>
+</CardGroup>
+
+## Next Layer
+
+SignalEvents from the Retina are consumed by [Layer 2: Limbic](/architecture/layer2-limbic), which uses small LSTM models to score their relevance to each registered module.

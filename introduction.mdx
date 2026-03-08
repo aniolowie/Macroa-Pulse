@@ -1,0 +1,115 @@
+---
+title: Introduction
+description: Proactive cognition for AI agents without cron jobs, webhooks, or LLM polling
+---
+
+<Note>
+Macroa-Pulse is in active development as a **Proof of Concept**. It is the first component of the [Macroa](https://github.com/aniolowie/Macroa) platform — an AI agent operating system.
+</Note>
+
+## The Problem
+
+Every AI agent framework today is **reactive**. An agent acts because something triggered it — a user message, a cron job, a webhook, an API call. Remove the trigger, and the agent does nothing.
+
+Building a genuinely useful AI assistant requires developers to anticipate every situation in which the agent should act and write an explicit trigger for it. The Pulse eliminates this requirement.
+
+## What is Macroa Pulse?
+
+Macroa Pulse is a **three-layer hierarchical signal perception system** that enables AI agents to notice when something is worth attention and act on it — without being explicitly triggered.
+
+```text
+ENVIRONMENT (files, memory, network, time)
+        │
+        ▼
+  LAYER 1: RETINA          — deterministic change detection, ~0 cost
+        │
+        ▼
+  LAYER 2: LIMBIC FILTER   — tiny per-cluster neural networks (LSTM/TCN), <5ms on CPU
+        │
+        ▼
+  LAYER 3: PREFRONTAL      — template-based question formation, ~0 cost
+        │
+        ▼
+  AGENT (wakes with a focused, scoped question)
+```
+
+In normal operation, the Pulse runs entirely on local compute with **zero LLM API calls**. The agent is only invoked when all three layers agree something is worth attention — and it wakes up with a specific question, not a blank slate.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card title="Zero-Cost Operation" icon="bolt">
+    No LLM polling required. Runs entirely on local compute with deterministic detection and tiny neural networks.
+  </Card>
+  <Card title="Hierarchical Filtering" icon="filter">
+    Three-layer architecture inspired by the brain's perceptual processing ensures only relevant signals reach the agent.
+  </Card>
+  <Card title="Online Learning" icon="chart-line">
+    Improves accuracy over time through implicit and explicit feedback from agent activations.
+  </Card>
+  <Card title="Privacy by Design" icon="shield-check">
+    All training data and models stay local. No external API calls or data transmission.
+  </Card>
+  <Card title="Module Fingerprints" icon="fingerprint">
+    Cold-start initialization using signal fingerprints ensures models are useful from day one.
+  </Card>
+  <Card title="Scoped Questions" icon="message-question">
+    Agents wake up with specific, focused questions — not generic polling loops.
+  </Card>
+</CardGroup>
+
+## How It Works
+
+The Pulse continuously monitors your environment through four signal sources:
+
+- **File system events** — New, modified, or deleted files in monitored directories
+- **Memory namespace deltas** — Facts written to the agent's persistent memory
+- **Time signals** — Cyclically-encoded hour, day of week, and elapsed time
+- **Network events** (optional) — Hash comparison on monitored HTTP endpoints
+
+Each signal passes through three layers:
+
+1. **Layer 1 (Retina)** detects changes deterministically and emits structured `SignalEvent` objects
+2. **Layer 2 (Limbic)** uses small LSTM networks (~50k-200k parameters) to compute relevance scores per module cluster
+3. **Layer 3 (Prefrontal)** converts high-relevance signals into specific, actionable questions using template interpolation
+
+Only when a signal passes all three layers does the agent wake up — with a focused question like:
+
+> "A new file appeared at `/home/user/Downloads/hw3.pdf`. Is this file related to a course assignment?"
+
+## Why Pulse?
+
+**Traditional approaches to proactive agents:**
+
+- **Cron jobs** — Static, can't adapt to user patterns
+- **Webhooks** — Reactive by definition, require external triggers
+- **LLM polling** — Effective but economically infeasible (~$10/minute at current API prices)
+
+**The Pulse approach:**
+
+- Learns user-specific patterns from usage
+- Runs continuously at near-zero cost
+- Achieves proactivity without AI, reserving LLM inference for the tasks it's uniquely suited to
+
+## Part of Macroa
+
+Macroa Pulse is the first module of the [Macroa](https://github.com/aniolowie/Macroa) platform — an AI agent operating system designed around the principle that **AI should be used only where no deterministic process can do the job**.
+
+The Pulse embodies this principle: it achieves proactive behavior using deterministic detection and tiny neural networks, ensuring that when the LLM is finally invoked, it's for focused reasoning, not continuous monitoring.
+
+## Get Started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Get up and running with Pulse in minutes
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/concepts/three-layer-architecture">
+    Understand the three-layer hierarchical design
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/signal-event">
+    Explore the public API surface
+  </Card>
+  <Card title="Design Paper" icon="file-lines" href="/resources/design-paper">
+    Read the full design rationale and approach
+  </Card>
+</CardGroup>

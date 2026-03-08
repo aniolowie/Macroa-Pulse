@@ -1,0 +1,148 @@
+---
+title: SignalEvent
+description: Deterministic event representation for change detection
+---
+
+## Overview
+
+`SignalEvent` is the fundamental data structure emitted by the Retina layer (Layer 1) to represent any detected change in the system. Each event encapsulates a single observable delta with source-specific metadata and a normalized feature vector for machine learning.
+
+## Class Definition
+
+```python
+from pulse.retina import SignalEvent
+```
+
+`SignalEvent` is a dataclass defined in `pulse/retina.py:32`.
+
+## Attributes
+
+<ResponseField name="source" type="str" required>
+  The origin of the signal. One of:
+  - `"filesystem"` — file created, modified, or deleted
+  - `"memory"` — memory namespace change (future)
+  - `"time"` — periodic tick event
+  - `"network"` — network activity (future)
+</ResponseField>
+
+<ResponseField name="location" type="str" required>
+  Source-specific location identifier:
+  - For `filesystem`: absolute file path
+  - For `time`: always `"tick"`
+  - For `memory` / `network`: namespace or endpoint
+</ResponseField>
+
+<ResponseField name="delta_type" type="str" required>
+  Type of change detected. One of:
+  - `"created"` — new resource appeared
+  - `"modified"` — existing resource changed
+  - `"deleted"` — resource removed
+  - `"tick"` — time-based periodic event
+</ResponseField>
+
+<ResponseField name="magnitude" type="float" required>
+  Normalized change intensity in range [0.0, 1.0].
+  
+  For filesystem events:
+  - `"created"` / `"deleted"`: always `1.0`
+  - `"modified"`: log-normalized file size
+  
+  For time events: always `1.0`
+</ResponseField>
+
+<ResponseField name="timestamp" type="float" required>
+  Unix timestamp (seconds since epoch) when the event was detected.
+</ResponseField>
+
+<ResponseField name="features" type="dict" required>
+  Source-specific metadata dictionary.
+  
+  **Filesystem events:**
+  - `path` (str): absolute path
+  - `extension` (str): file extension including dot (e.g., `".pdf"`)
+  - `size_bytes` (int): file size in bytes
+  - `directory_depth` (int): number of directory levels
+  - `filename_tokens` (list[str]): tokenized stem
+  
+  **Time events:**
+  - `hour_sin` (float): sin(2π × hour / 24)
+  - `hour_cos` (float): cos(2π × hour / 24)
+  - `dow_sin` (float): sin(2π × day_of_week / 7)
+  - `dow_cos` (float): cos(2π × day_of_week / 7)
+  - `minutes_since_last_activation` (float): elapsed time metric
+</ResponseField>
+
+## Methods
+
+### to_feature_vector
+
+```python
+def to_feature_vector(self) -> np.ndarray
+```
+
+Convert the SignalEvent into a fixed-length feature vector for machine learning models.
+
+**Returns:**
+- `np.ndarray`: float32 array of length `FEATURE_DIM` (16), with slots:
+  - `[0]`: magnitude
+  - `[1]`: delta_type encoded (created=1.0, tick=0.75, modified=0.5, deleted=0.0)
+  - `[2]`: source encoded (filesystem=1.0, time=0.5, memory=0.25, network=0.0)
+  - `[3–4]`: hour_sin, hour_cos (time events only)
+  - `[5–6]`: dow_sin, dow_cos (time events only)
+  - `[7]`: minutes_since_last_activation (time events only)
+  - `[8]`: log-normalized size_bytes (filesystem only)
+  - `[9]`: normalized directory_depth (filesystem only)
+  - `[10]`: CRC32 hash of extension (filesystem only)
+  - `[11–15]`: reserved for future use
+
+**Example:**
+
+```python
+import numpy as np
+from pulse.retina import SignalEvent
+
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/report.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1678123456.0,
+    features={
+        "path": "/home/user/report.pdf",
+        "extension": ".pdf",
+        "size_bytes": 524288,
+        "directory_depth": 2,
+        "filename_tokens": ["report"],
+    }
+)
+
+vector = event.to_feature_vector()
+assert vector.shape == (16,)
+assert vector.dtype == np.float32
+```
+
+## Usage
+
+SignalEvent objects are produced by the [Retina](/api/retina) layer and placed on a thread-safe queue. They are consumed by the [LimbicLayer](/api/limbic) for relevance scoring.
+
+```python
+import queue
+from pulse.retina import Retina
+
+signal_queue = queue.Queue()
+retina = Retina(
+    watch_dirs=["/home/user/documents"],
+    signal_queue=signal_queue,
+)
+retina.start()
+
+# Events are placed on the queue automatically
+event = signal_queue.get(timeout=5.0)
+print(f"Detected {event.delta_type} at {event.location}")
+```
+
+## See Also
+
+- [Retina](/api/retina) — Layer 1 detector that produces SignalEvents
+- [SignalBus](/api/signal-bus) — Event distribution layer
+- [LimbicLayer](/api/limbic) — Layer 2 consumer of SignalEvents

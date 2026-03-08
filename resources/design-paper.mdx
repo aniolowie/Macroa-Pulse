@@ -1,0 +1,107 @@
+---
+title: Design Paper
+description: The biological inspiration and technical rationale behind Pulse's hierarchical architecture
+icon: file-text
+---
+
+## Overview
+
+The Pulse architecture is described in detail in our design paper: **"Proactive Cognition in AI Agent Systems via Hierarchical Signal Perception"** by Maciej (aniolowie).
+
+This page summarizes the key insights and design rationale. For the complete technical specification, see the [full paper](https://github.com/aniolowie/Macroa-Pulse/blob/main/docs/WHITEPAPER.md).
+
+## The Core Problem
+
+Every AI agent system built today is fundamentally reactive. An agent acts because something triggered it—a user message, a cron job, a webhook, an API call. Remove the trigger, and the agent does nothing.
+
+The obvious solution—running the agent continuously, polling for relevant events—would cost approximately $10 per minute at current API prices for capable models, making it economically absurd for any real-world deployment.
+
+## The Biological Insight
+
+The human brain solves this exact problem. A person doesn't think about their homework every second of every day. But when they see a familiar file, or a classmate mentions an assignment, something in their brain fires: *"I should check on that."* This happens **before conscious reasoning**. It is fast, cheap, and usually accurate.
+
+The brain achieves this through **hierarchical perceptual processing**:
+
+- Raw sensory input is processed by cheap, fast, low-level systems that detect change and pattern
+- Only when these low-level systems flag something as potentially relevant does the expensive, slow, high-level reasoning system engage
+- The expensive system (prefrontal cortex) never sees raw sensory data—it only sees pre-filtered, pre-interpreted signals from the layers below it
+
+The Pulse applies this principle to AI agent systems.
+
+## The Three-Layer Architecture
+
+```
+ENVIRONMENT (files, memory, network, time)
+        │
+        ▼
+  LAYER 1: RETINA          — deterministic change detection, ~0 cost
+        │
+        ▼
+  LAYER 2: LIMBIC FILTER   — tiny neural networks, <5ms on CPU
+        │
+        ▼
+  LAYER 3: PREFRONTAL      — template-based question formation, ~0 cost
+        │
+        ▼
+  AGENT (wakes with focused question)
+```
+
+Each layer acts as a gate. The vast majority of environmental changes are filtered out by Layer 1 (no delta detected) or Layer 2 (low relevance score). The agent is only woken when all three layers agree that something is worth attention.
+
+### Layer 1: The Retina
+
+Deterministic event detector watching file system events, memory namespace changes, time signals, and optionally network events. It has no state and no intelligence—it only detects and emits structured `SignalEvent` objects.
+
+### Layer 2: The Limbic Filter
+
+The core learning component. It maintains a small neural network (LSTM or TCN with ~50,000-200,000 parameters) for each registered module cluster. These models take a sliding window of recent signal events and produce a relevance score (0.0-1.0).
+
+The critical innovation for cold-start: **module fingerprints**—structured JSON documents that each module provides at registration, describing what signals are associated with its relevance. These fingerprints are converted into synthetic training examples that pre-initialize model weights before any real data exists.
+
+### Layer 3: The Prefrontal Filter
+
+Converts a relevance signal into a specific, actionable question for the agent through template interpolation. For example: *"A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment?"*
+
+The agent wakes up with this specific question, not a blank slate.
+
+## Key Properties
+
+### Zero LLM Cost in Normal Operation
+
+The Pulse runs entirely on local compute. Layer 1 is deterministic. Layer 2 is a tiny neural network running on CPU. Layer 3 is string interpolation. No API calls are made. The cost of running the Pulse continuously is electricity, not tokens.
+
+### Improving Accuracy Over Time
+
+Unlike a cron job, which is equally accurate (or inaccurate) forever, the Pulse improves with usage. Each agent activation provides a training signal. Over time, the cluster models learn the user's specific patterns.
+
+### Privacy by Design
+
+All data—training examples, model weights, signal history—is stored locally on the user's machine. Nothing is sent to external servers. The Pulse does not require an internet connection to function.
+
+## Design Philosophy
+
+> AI is used only where no deterministic process can do the job. Everything else is infrastructure.
+
+The Pulse embodies this principle recursively: it achieves proactive behavior using zero LLM calls in normal operation. The LLM is only engaged when all three layers cannot resolve ambiguity—which should be rare.
+
+## Read the Full Paper
+
+The complete design paper includes:
+- Detailed comparison with existing approaches
+- Mathematical foundations of the LSTM/TCN models
+- Cold-start strategy and module fingerprint specification
+- Analysis of limitations and future work
+- References to neuroscience and sequence modeling literature
+
+Read the full paper: [WHITEPAPER.md](https://github.com/aniolowie/Macroa-Pulse/blob/main/docs/WHITEPAPER.md)
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Architecture Guide" icon="sitemap" href="/concepts/three-layer-architecture">
+    Implementation specification and technical details
+  </Card>
+  <Card title="Module Fingerprints" icon="fingerprint" href="/architecture/module-fingerprints">
+    How modules describe their signal patterns
+  </Card>
+</CardGroup>

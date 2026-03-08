@@ -1,0 +1,290 @@
+---
+title: TrainingBuffer
+description: Activation recording and online training feedback loop
+---
+
+## Overview
+
+`TrainingBuffer` manages the feedback loop that drives online learning for [LimbicLayer](/api/limbic) models. It stores activation records, collects explicit or implicit feedback, and triggers weight updates.
+
+## Import
+
+```python
+from pulse.training import TrainingBuffer, ActivationRecord
+```
+
+## Class Definitions
+
+### ActivationRecord
+
+Defined in `pulse/training.py:23`.
+
+```python
+@dataclass
+class ActivationRecord:
+    module_id: str
+    window: list[SignalEvent]
+    timestamp: float
+    label: float | None = None
+```
+
+<ResponseField name="module_id" type="str" required>
+  The module that triggered this activation.
+</ResponseField>
+
+<ResponseField name="window" type="list[SignalEvent]" required>
+  The event window that caused the activation.
+</ResponseField>
+
+<ResponseField name="timestamp" type="float" required>
+  Unix timestamp when the activation was recorded.
+</ResponseField>
+
+<ResponseField name="label" type="float | None" default="None">
+  Feedback label in range [0.0, 1.0], or `None` if not yet provided.
+  
+  - `1.0`: Highly relevant activation
+  - `0.0`: Irrelevant activation
+  - `None`: Waiting for feedback
+</ResponseField>
+
+### TrainingBuffer
+
+Defined in `pulse/training.py:31`.
+
+## Constructor
+
+```python
+def __init__(self) -> None
+```
+
+Creates an empty buffer ready to record activations.
+
+## Methods
+
+### record_activation
+
+```python
+def record_activation(
+    self,
+    module_id: str,
+    window: list[SignalEvent],
+) -> str
+```
+
+Store an ActivationRecord with `label=None` and return a unique activation ID.
+
+<ParamField path="module_id" type="str" required>
+  The module that triggered the activation.
+</ParamField>
+
+<ParamField path="window" type="list[SignalEvent]" required>
+  The event window that was scored and escalated.
+</ParamField>
+
+**Returns:**
+- `str`: Unique activation ID (UUID hex string)
+
+**Example:**
+
+```python
+from pulse.training import TrainingBuffer
+from pulse.retina import SignalEvent
+
+buffer = TrainingBuffer()
+
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/homework.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1678123456.0,
+    features={},
+)
+
+activation_id = buffer.record_activation("homework_watcher", [event])
+print(activation_id)  # e.g., "3a5f8c9e2b1d4f6a8c0e3b5d7f9a2c4e"
+```
+
+### record_feedback
+
+```python
+def record_feedback(self, activation_id: str, label: float) -> None
+```
+
+Attach an explicit label to a stored record.
+
+Silently ignores unknown activation IDs.
+
+<ParamField path="activation_id" type="str" required>
+  The activation ID returned by `record_activation()`.
+</ParamField>
+
+<ParamField path="label" type="float" required>
+  Feedback label in range [0.0, 1.0].
+</ParamField>
+
+**Raises:**
+- `ValueError`: If label is not in [0.0, 1.0]
+
+**Example:**
+
+```python
+# User confirms the activation was relevant
+buffer.record_feedback(activation_id, 1.0)
+
+# User confirms the activation was NOT relevant
+buffer.record_feedback(activation_id, 0.0)
+
+# Partial relevance
+buffer.record_feedback(activation_id, 0.6)
+```
+
+### drain
+
+```python
+def drain(self, limbic: LimbicLayer) -> None
+```
+
+Train on all ready records, then remove them from the buffer.
+
+A record is **ready** if:
+- It has an explicit label (via `record_feedback()`), OR
+- It is older than 5 minutes (fallback to `infer_label()`)
+
+Records with no label and younger than 5 minutes are kept.
+
+<ParamField path="limbic" type="LimbicLayer" required>
+  The LimbicLayer instance whose models will be updated.
+</ParamField>
+
+**Example:**
+
+```python
+from pulse.limbic import LimbicLayer
+from pulse.training import TrainingBuffer
+
+limbic = LimbicLayer()
+buffer = TrainingBuffer()
+
+# ... register modules, record activations, collect feedback ...
+
+# Train on all ready records
+buffer.drain(limbic)
+```
+
+### infer_label
+
+```python
+@staticmethod
+def infer_label(record: ActivationRecord) -> float
+```
+
+Implicit feedback heuristic used when no explicit label arrives within the 5-minute timeout.
+
+**Current implementation:**
+- Returns `0.8` if `record.window` is non-empty
+- Returns `0.2` if `record.window` is empty
+
+**Note:** The current implementation is a placeholder. The real heuristic must inspect whether the agent produced output, which only the kernel knows. This will be revisited when the kernel passes agent result metadata into ActivationRecord.
+
+<ParamField path="record" type="ActivationRecord" required>
+  The activation record to infer a label for.
+</ParamField>
+
+**Returns:**
+- `float`: Inferred label (currently `0.8` or `0.2`)
+
+## Lifecycle of a Record
+
+1. **Record activation:** `record_activation()` stores the record with `label=None`
+2. **Attach feedback (optional):** `record_feedback()` sets the label when explicit feedback arrives
+3. **Drain:** `drain()` trains the model for all labelled records (and for unlabelled records older than 5 minutes using `infer_label()`), then removes them
+
+## Constants
+
+<ResponseField name="_FEEDBACK_TIMEOUT" type="float" default="300.0">
+  Timeout in seconds (5 minutes) before falling back to `infer_label()`.
+</ResponseField>
+
+<ResponseField name="_IMPLICIT_LABEL_WITH_OUTPUT" type="float" default="0.8">
+  Implicit label when the window is non-empty (placeholder).
+</ResponseField>
+
+<ResponseField name="_IMPLICIT_LABEL_NO_OUTPUT" type="float" default="0.2">
+  Implicit label when the window is empty (placeholder).
+</ResponseField>
+
+## Complete Example
+
+```python
+import time
+from pulse.limbic import LimbicLayer
+from pulse.training import TrainingBuffer
+from pulse.retina import SignalEvent
+from pulse.fingerprint import parse_fingerprint
+
+# 1. Setup
+limbic = LimbicLayer()
+buffer = TrainingBuffer()
+
+fingerprint = parse_fingerprint({
+    "module_id": "homework_watcher",
+    "cluster": "homework",
+    "version": "1.0.0",
+    "question_template": "Check {location}?",
+    "default_threshold": 0.7,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Documents/Homework"],
+            "relevant_extensions": [".pdf"],
+            "irrelevant_extensions": [],
+        },
+    },
+})
+
+limbic.register("homework_watcher", fingerprint)
+
+# 2. Simulate activation
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/Documents/Homework/math.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=time.time(),
+    features={"extension": ".pdf", "size_bytes": 524288, "directory_depth": 4, "filename_tokens": ["math"]},
+)
+
+activation_id = buffer.record_activation("homework_watcher", [event])
+print(f"Recorded activation: {activation_id}")
+
+# 3. Collect user feedback (e.g., after presenting to agent)
+user_said_relevant = True
+label = 1.0 if user_said_relevant else 0.0
+buffer.record_feedback(activation_id, label)
+
+# 4. Train the model
+buffer.drain(limbic)
+print("Model updated with feedback")
+
+# 5. Future activations will benefit from improved model
+score = limbic.score("homework_watcher", [event])
+print(f"New score: {score:.2f}")
+```
+
+## Automatic Drain in PulseRegistry
+
+[PulseRegistry](/api/pulse-registry) automatically calls `drain_training()` 2 seconds after each escalation, giving the kernel time to attach explicit feedback before the buffer is flushed.
+
+```python
+# Internal to PulseRegistry (pulse/registry.py:161)
+t = threading.Timer(_DRAIN_DELAY_SECONDS, self.drain_training)
+t.daemon = True
+t.start()
+```
+
+## See Also
+
+- [LimbicLayer](/api/limbic) — Consumes training labels via `update_weights()`
+- [PulseRegistry](/api/pulse-registry) — Owns TrainingBuffer and coordinates automatic draining
+- [SignalEvent](/api/signal-event) — Events stored in activation records

@@ -1,0 +1,308 @@
+---
+title: "Layer 2: Limbic"
+description: "Per-module relevance scoring via small LSTM models"
+---
+
+## Overview
+
+The Limbic layer maintains a small neural network for each registered module. These networks consume a window of recent `SignalEvent` objects from Layer 1 (Retina) and output a relevance score (0.0–1.0). When the score exceeds the configured threshold, Layer 3 (Prefrontal) is triggered to form a question.
+
+<Info>
+**Cost:** < 5ms inference time on CPU per module  
+**Parameters:** ~50K–200K per module (well under 1M)
+</Info>
+
+## Architecture: Per-Module Models
+
+Each module gets its own **independent LSTM model**. Models run in parallel and do not share parameters or state.
+
+```
+SignalEvent stream (from Retina)
+         │
+         ▼
+┌────────────────────────────────┐
+│  Sliding Window Buffer         │
+│  (last N events)               │
+└────────┬───────────────────────┘
+         │
+         ├──► Module A LSTM ──► score_A
+         ├──► Module B LSTM ──► score_B
+         └──► Module C LSTM ──► score_C
+                     │
+                     ▼ (if score > threshold)
+              Layer 3: Prefrontal Filter
+```
+
+<Note>
+**Why LSTM over transformer?** LSTMs are designed for streaming time-series data, run efficiently on CPU, and handle variable-length sequences naturally. Transformers require fixed attention windows and are too expensive for continuous inference.
+</Note>
+
+## Model Architecture
+
+Each `ClusterModel` is a small, single-layer LSTM:
+
+```python pulse/limbic.py
+class ClusterModel(nn.Module):
+    """
+    Small per-module LSTM that scores a window of SignalEvent feature vectors
+    for relevance to a specific module.
+
+    Input:  (batch=1, window_len, FEATURE_DIM) float32
+    Output: scalar float32 in [0.0, 1.0]
+    """
+
+    HIDDEN_SIZE: int = 64
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lstm = nn.LSTM(
+            input_size=FEATURE_DIM,
+            hidden_size=self.HIDDEN_SIZE,
+            num_layers=1,
+            batch_first=True,
+        )
+        self.head = nn.Linear(self.HIDDEN_SIZE, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (1, window_len, FEATURE_DIM) float32
+        Returns:
+            scalar tensor, float32 relevance score in [0.0, 1.0]
+        """
+        _, (h_n, _) = self.lstm(x)           # h_n: (1, 1, HIDDEN_SIZE)
+        last_hidden = h_n.squeeze(0).squeeze(0)  # (HIDDEN_SIZE,)
+        score = self.sigmoid(self.head(last_hidden))
+        return score.squeeze()
+```
+
+### Parameter Count
+
+- **LSTM:** `4 * (FEATURE_DIM * HIDDEN_SIZE + HIDDEN_SIZE² + HIDDEN_SIZE)` = `4 * (16*64 + 64² + 64)` = **20,736**
+- **Linear head:** `HIDDEN_SIZE * 1 + 1` = **65**
+- **Total:** ~20,800 parameters per module
+
+## Cold-Start Initialization
+
+When a module registers with the Pulse, it provides a [module fingerprint](/architecture/module-fingerprints). The fingerprint is used to initialize the model's weights with a **meaningful prior** instead of random noise, so the model has a reasonable baseline on day one.
+
+### Weight Biasing Process
+
+```python pulse/limbic.py
+def register(self, module_id: str, fingerprint: ModuleFingerprint) -> None:
+    """
+    Create a ClusterModel for the module and apply cold-start weight biasing
+    derived from fingerprint.slot_relevance_mask().
+
+    Relevant slots have their LSTM input weights scaled up; irrelevant slots
+    have them scaled down so the model starts with a meaningful prior.
+    """
+    model = ClusterModel()
+    self._apply_cold_start_bias(model, fingerprint.slot_relevance_mask())
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+    self._registry[module_id] = _Entry(model=model, optimizer=optimizer)
+```
+
+The bias is applied to the LSTM's input-to-hidden weights:
+
+```python pulse/limbic.py
+@staticmethod
+def _apply_cold_start_bias(model: ClusterModel, mask: np.ndarray) -> None:
+    """
+    Scale the LSTM input-to-hidden weight columns by a factor derived from
+    the slot relevance mask.
+
+    Scale formula: 0.1 + 1.9 * mask[i]
+        mask = 0.0  ->  scale = 0.1  (nearly zeroed, irrelevant slot)
+        mask = 0.5  ->  scale = 1.05 (neutral)
+        mask = 1.0  ->  scale = 2.0  (doubled, highly relevant slot)
+
+    weight_ih_l0 shape: (4 * HIDDEN_SIZE, FEATURE_DIM)
+    Each column corresponds to one input feature slot.
+    """
+    scale = torch.tensor(0.1 + 1.9 * mask, dtype=torch.float32)  # (FEATURE_DIM,)
+    with torch.no_grad():
+        # weight_ih_l0: (4*H, FEATURE_DIM) — broadcast-multiply each column
+        model.lstm.weight_ih_l0.mul_(scale.unsqueeze(0))
+```
+
+<Accordion title="Example: Homework agent fingerprint bias">
+For a homework agent that watches `~/Downloads` for `.pdf` and `.docx` files:
+
+- **[0] magnitude:** 1.0 (always relevant)
+- **[1] delta_type:** 1.0 (filesystem events are critical)
+- **[2] source:** 1.0 (distinguishes event types)
+- **[8] size_bytes:** 1.0 (file size matters)
+- **[9] directory_depth:** 1.0 (path structure matters)
+- **[10] extension:** 1.0 (`.pdf`/`.docx` highly relevant)
+- **[3–7] time features:** 0.5–1.0 (depends on declared active hours)
+- **[11–15] reserved:** 0.0 (not used)
+
+The model's input weights for slots [0, 1, 2, 8, 9, 10] are **doubled** (scale=2.0), while reserved slots are **nearly zeroed** (scale=0.1).
+</Accordion>
+
+## Cluster Assignment
+
+Modules can share a **cluster** if they respond to similar signals. When two modules belong to the same cluster (e.g., "homework-agent" and "notes-agent" both in cluster "academic"), they **share a cluster model**.
+
+The model fires for the cluster as a whole, and Layer 3 determines which specific module is most relevant.
+
+<Warning>
+Cluster sharing is an optimization for related modules. Most modules should have their own unique cluster to avoid interference.
+</Warning>
+
+## Inference
+
+```python pulse/limbic.py
+def score(self, module_id: str, window: list[SignalEvent]) -> float:
+    """
+    Run inference on a window of SignalEvents.
+
+    Returns 0.0 if the window is empty or the module is not registered.
+    """
+    if not window or module_id not in self._registry:
+        return 0.0
+    entry = self._registry[module_id]
+    entry.model.eval()
+    x = self._window_to_tensor(window)
+    with torch.no_grad():
+        result = entry.model(x)
+    return float(result.item())
+```
+
+The input tensor is constructed by stacking feature vectors:
+
+```python pulse/limbic.py
+@staticmethod
+def _window_to_tensor(window: list[SignalEvent]) -> torch.Tensor:
+    """Convert a list of SignalEvents to a (1, T, FEATURE_DIM) float32 tensor."""
+    vectors = np.stack([e.to_feature_vector() for e in window], axis=0)
+    return torch.from_numpy(vectors).unsqueeze(0)  # (1, T, FEATURE_DIM)
+```
+
+## Online Learning
+
+The Limbic layer supports **online learning** — models are updated one gradient step at a time as new labeled examples arrive.
+
+### Training Labels
+
+Labels come from two sources:
+
+1. **Implicit:** If the agent was activated and took an action (wrote memory, ran a tool), the activation is labeled **positive (1.0)**. If the agent did nothing, it's labeled **negative (0.0)**.
+2. **Explicit:** The shell can prompt the user "Was this useful?" and the user's response overrides the implicit label.
+
+### Weight Update
+
+```python pulse/limbic.py
+def update_weights(
+    self,
+    module_id: str,
+    window: list[SignalEvent],
+    label: float,
+) -> None:
+    """
+    Perform a single online gradient step using BCELoss.
+
+    No-op if the window is empty or the module is not registered.
+    """
+    if not window or module_id not in self._registry:
+        return
+    entry = self._registry[module_id]
+    entry.model.train()
+    x = self._window_to_tensor(window)
+    target = torch.tensor(label, dtype=torch.float32)
+    prediction = entry.model(x)
+    loss = nn.functional.binary_cross_entropy(prediction, target)
+    entry.optimizer.zero_grad()
+    loss.backward()
+    entry.optimizer.step()
+```
+
+<Note>
+The learning rate is set to `1e-3` (0.001) to allow rapid adaptation to new patterns without catastrophic forgetting.
+</Note>
+
+## Persistence
+
+Models and optimizer states are saved to disk:
+
+```python pulse/limbic.py
+def save(self, path: Path) -> None:
+    """Persist all model weights and optimiser states to disk."""
+    checkpoint = {
+        module_id: {
+            "model": entry.model.state_dict(),
+            "optimizer": entry.optimizer.state_dict(),
+        }
+        for module_id, entry in self._registry.items()
+    }
+    torch.save(checkpoint, path)
+
+def load(self, path: Path) -> None:
+    """
+    Restore model weights and optimiser states from disk.
+
+    Modules present in the checkpoint but not yet registered are
+    re-created as fresh ClusterModel instances with restored state.
+    """
+    checkpoint = torch.load(path, weights_only=True)
+    for module_id, states in checkpoint.items():
+        if module_id not in self._registry:
+            model = ClusterModel()
+            optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+            self._registry[module_id] = _Entry(model=model, optimizer=optimizer)
+        entry = self._registry[module_id]
+        entry.model.load_state_dict(states["model"])
+        entry.optimizer.load_state_dict(states["optimizer"])
+```
+
+<Info>
+Models are stored in `~/.macroa/pulse/models/`. No data ever leaves the machine.
+</Info>
+
+## Public API
+
+```python pulse/limbic.py
+class LimbicLayer:
+    def register(self, module_id: str, fingerprint: ModuleFingerprint) -> None:
+        """Create a ClusterModel for the module with cold-start bias."""
+
+    def score(self, module_id: str, window: list[SignalEvent]) -> float:
+        """Run inference on a window of SignalEvents."""
+
+    def update_weights(
+        self,
+        module_id: str,
+        window: list[SignalEvent],
+        label: float,
+    ) -> None:
+        """Perform a single online gradient step using BCELoss."""
+
+    def save(self, path: Path) -> None:
+        """Persist all model weights and optimiser states to disk."""
+
+    def load(self, path: Path) -> None:
+        """Restore model weights and optimiser states from disk."""
+```
+
+## Design Principles
+
+<CardGroup cols={2}>
+  <Card title="Per-Module Models" icon="microchip">
+    Each module gets its own LSTM for maximum specificity.
+  </Card>
+  <Card title="CPU-Optimized" icon="gauge-high">
+    LSTM architecture chosen for under 5ms inference on CPU.
+  </Card>
+  <Card title="Cold-Start Priors" icon="snowflake">
+    Fingerprints initialize weights meaningfully on day one.
+  </Card>
+  <Card title="Online Learning" icon="arrows-rotate">
+    Models adapt continuously from implicit and explicit feedback.
+  </Card>
+</CardGroup>
+
+## Next Layer
+
+When a module's score exceeds the threshold, [Layer 3: Prefrontal](/architecture/layer3-prefrontal) forms a scoped question to wake the agent.

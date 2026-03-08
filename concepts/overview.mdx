@@ -1,0 +1,142 @@
+---
+title: Pulse Overview
+description: Understanding Macroa's proactive cognition system
+---
+
+## What is Pulse?
+
+Pulse is Macroa's **proactive cognition subsystem** — the component that enables agents to act independently without external triggers. Unlike traditional reactive systems that only respond to user commands or scheduled events, Pulse continuously monitors the environment and intelligently determines when something deserves the agent's attention.
+
+<Info>
+Pulse answers one question continuously, at near-zero cost: "Given the current state of the environment, is there anything that deserves the agent's attention right now?"
+</Info>
+
+## The Core Problem
+
+Every AI agent framework today — LangChain, AutoGen, CrewAI, OpenAI Agents — is fundamentally **reactive**. An agent is a function: given an input, produce an output. The input always comes from something external:
+
+- A user message
+- A cron job timer
+- A webhook
+- Another agent
+
+Without these triggers, the agent does nothing. Building a genuinely useful AI assistant requires developers to anticipate every situation where the agent should act and write explicit triggers for each one.
+
+### The Naive Solution Fails
+
+The obvious approach — polling the LLM every few seconds asking "is there anything I should be doing?" — would work but costs approximately **$10 per minute** at current API prices. This makes continuous proactivity economically absurd.
+
+## The Biological Insight
+
+The human brain solves this exact problem. You don't consciously think about your homework every second, but when you see a familiar file or hear a classmate mention an assignment, something in your brain fires: *"I should check on that."*
+
+This happens **before conscious reasoning**. It's fast, cheap, and usually accurate.
+
+```
+RAW SENSORY INPUT
+       ↓
+Low-level pattern detection (fast, cheap)
+       ↓
+Relevance filtering (milliseconds)
+       ↓
+High-level reasoning (only when necessary)
+```
+
+The brain achieves this through **hierarchical perceptual processing**. Raw sensory input is processed by cheap, fast, low-level systems that detect change and pattern. Only when these systems flag something as potentially relevant does the expensive, high-level reasoning system engage.
+
+<Tip>
+Pulse applies this same principle: the expensive LLM never sees raw environmental data. It only receives pre-filtered, pre-interpreted signals when all three layers agree something is worth attention.
+</Tip>
+
+## How Pulse Works
+
+Pulse uses a **three-layer hierarchical architecture** inspired by brain structure:
+
+<CardGroup cols={3}>
+  <Card title="Layer 1: Retina" icon="eye">
+    Deterministic change detection. Watches files, memory, and time for deltas.
+    
+    **Cost:** ~0 CPU, always running
+  </Card>
+  
+  <Card title="Layer 2: Limbic" icon="brain">
+    Small neural networks learn patterns. One per module cluster.
+    
+    **Cost:** Under 5ms on CPU per inference
+  </Card>
+  
+  <Card title="Layer 3: Prefrontal" icon="comments">
+    Forms specific questions using templates. Gates final escalation.
+    
+    **Cost:** ~0 (string interpolation)
+  </Card>
+</CardGroup>
+
+Each layer acts as a **gate**. The vast majority of environmental changes are filtered out by Layer 1 (no meaningful delta) or Layer 2 (low relevance score). The agent only wakes when all three layers agree something deserves attention.
+
+## Key Properties
+
+### Zero LLM Cost in Normal Operation
+
+Pulse runs entirely on local compute. Layer 1 is deterministic. Layer 2 uses tiny neural networks on CPU. Layer 3 is string interpolation. **No API calls are made.** The cost of running Pulse continuously is electricity, not tokens.
+
+### Improves Over Time
+
+Unlike a cron job that's equally accurate (or inaccurate) forever, Pulse **learns from usage**. Each agent activation provides a training signal. Over time, the neural networks learn your specific patterns:
+
+- When your homework tends to appear
+- What your relevant file types look like  
+- How your usage patterns vary by day of week
+
+### Privacy by Design
+
+All data — training examples, model weights, signal history — is stored **locally on your machine**. Nothing is sent to external servers. Pulse doesn't require an internet connection to function.
+
+### Scoped Questions
+
+When Pulse wakes the agent, it doesn't say "something changed." It asks a **specific, focused question**:
+
+<Note>
+*"A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?"*
+</Note>
+
+The agent wakes with context, not a blank slate. This dramatically reduces the reasoning work required.
+
+## What Pulse Is Not
+
+**Not a cron job:** A cron asks *"is it 3pm?"* Pulse asks *"does the current state look like a state that has historically preceded something worth doing?"*
+
+**Not a webhook system:** Webhooks are reactive by definition. Something external must trigger them.
+
+**Not continuous LLM polling:** Pulse achieves proactivity without continuously calling expensive models.
+
+**Not a replacement for the agent:** Pulse doesn't make decisions. It identifies moments when decisions might be needed and asks focused questions.
+
+## Architecture Philosophy
+
+> **AI is used only where no deterministic process can do the job. Everything else is infrastructure.**
+
+Pulse embodies this principle recursively:
+
+- Layer 1 uses deterministic file system watchers and time ticks
+- Layer 2 uses small, cheap neural networks for pattern recognition  
+- Layer 3 uses string templates for question formation
+- The LLM is only called when all three layers cannot resolve ambiguity (rare)
+
+This inversion — doing the cheap work first and expensive work last — is what makes continuous proactivity economically viable.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Three-Layer Architecture" icon="layer-group" href="/concepts/three-layer-architecture">
+    Deep dive into Retina, Limbic, and Prefrontal layers
+  </Card>
+  
+  <Card title="Signal Perception" icon="signal" href="/concepts/signal-perception">
+    How signals flow through the system
+  </Card>
+  
+  <Card title="Proactive vs Reactive" icon="bolt" href="/concepts/proactive-vs-reactive">
+    Why this approach is fundamentally different
+  </Card>
+</CardGroup>

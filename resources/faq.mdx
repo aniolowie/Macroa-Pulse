@@ -1,0 +1,213 @@
+---
+title: Frequently Asked Questions
+description: Common questions about Pulse, its capabilities, and limitations
+icon: circle-question
+---
+
+<Accordion title="How does Pulse work without making LLM calls?">
+Pulse uses a three-layer hierarchical architecture where only the final reasoning step (if needed) involves an LLM:
+
+- **Layer 1 (Retina):** Deterministic change detection—watches files, memory, time, and network for changes
+- **Layer 2 (Limbic Filter):** Small neural networks (~50K-200K parameters) that run on CPU in under 5ms, producing relevance scores for each module cluster
+- **Layer 3 (Prefrontal Filter):** Template-based question formation using string interpolation
+
+The agent is only invoked when all three layers agree something is worth attention, and it wakes up with a specific, scoped question—not a blank slate.
+
+In normal operation, no LLM API calls are made. The cost is electricity, not tokens.
+</Accordion>
+
+<Accordion title="How does Pulse handle the cold-start problem?">
+Every AI agent system that learns from usage faces the cold-start problem: the model is useless before it has seen any data.
+
+Pulse solves this through **module fingerprints**—structured JSON documents that each module provides at registration time, describing what signals are associated with its relevance. These fingerprints include:
+
+- Relevant file extensions and directories
+- Typical activation hours and days
+- Memory namespaces to monitor
+- Expected signal patterns
+
+These fingerprints are converted into **synthetic training examples** that pre-initialize the cluster model's weights before any real data exists. The model starts with a reasonable prior on day one and refines it from real usage.
+</Accordion>
+
+<Accordion title="What happens with rare events?">
+For events that occur very rarely (once a year or less), the cluster model will have sparse training data and lower confidence. This is a known limitation.
+
+The module fingerprint prior provides a starting point, but rare-event prediction is inherently challenging. Future work may explore:
+
+- Pre-training cluster models on aggregate anonymized data from multiple users (with consent)
+- Transfer learning from similar modules
+- Hybrid approaches that combine Pulse with explicit scheduling for known rare events
+
+For now, very rare events may require a traditional cron job or explicit trigger in addition to Pulse.
+</Accordion>
+
+<Accordion title="Is my data sent to external servers?">
+No. Pulse operates with **privacy by design**:
+
+- All training data is stored locally on your machine in `~/.macroa/pulse/training_data.db`
+- All model weights are stored locally in `~/.macroa/pulse/models/`
+- No data ever leaves your machine
+- Pulse does not require an internet connection to function
+
+The only network activity is from optional signal sources (like monitoring an HTTP endpoint), which you explicitly configure.
+</Accordion>
+
+<Accordion title="How does Pulse improve over time?">
+Pulse uses **online learning**—it updates cluster models with one gradient step per new labeled example. Labels come from two sources:
+
+1. **Implicit feedback:** If the agent was activated and took an action (wrote to memory, ran a tool), the activation is labeled positive. If the agent did nothing, it's labeled negative.
+
+2. **Explicit feedback:** The shell can present a "was this useful?" prompt. User response overrides implicit labels.
+
+Over time, the cluster models learn your specific patterns: when your homework tends to appear, what your relevant file types look like, how your usage patterns vary by day of week.
+
+Unlike a cron job, which is equally accurate (or inaccurate) forever, Pulse gets smarter with use.
+</Accordion>
+
+<Accordion title="What signals does Pulse monitor?">
+Pulse watches four types of signals:
+
+| Signal Source | What's Detected | Example Use Case |
+|---------------|-----------------|------------------|
+| **File system** | New, modified, or deleted files in monitored directories | Homework assignment appears in Downloads |
+| **Memory** | Facts written or updated in monitored namespaces | Last assignment check date updated |
+| **Time** | Cyclical time features (hour of day, day of week, time since last activation) | It's 3pm on a weekday (typical study time) |
+| **Network** (optional) | Hash changes on monitored HTTP endpoints | Course website updated with new assignment |
+
+Modules declare which signals they care about in their fingerprints. Pulse only monitors what modules have explicitly requested.
+</Accordion>
+
+<Accordion title="Can Pulse be fooled or exploited?">
+Like any perceptual system, Pulse can be triggered by adversarial inputs. For example:
+
+- A malicious file placed in a watched directory could trigger the Pulse
+- Rapid file system changes could cause false positives
+
+Mitigations:
+
+- **Capability-based security:** Modules can only watch directories they've declared in their fingerprints
+- **Threshold tuning:** Cluster models require a minimum relevance score before firing
+- **User feedback:** Incorrect activations are labeled as negative examples, teaching the model to ignore similar patterns
+
+This is an area for future research. The architecture document notes adversarial signals as a potential attack surface worth further study.
+</Accordion>
+
+<Accordion title="How much CPU and memory does Pulse use?">
+Pulse is designed to run continuously in the background with minimal resource usage:
+
+- **CPU:** Layer 1 uses filesystem watchers (inotify on Linux) which are event-driven and idle when nothing changes. Layer 2 runs small models (under 5ms inference time per cluster). Layer 3 is string interpolation (~0 cost).
+
+- **Memory:** Each cluster model is ~50K-200K parameters (~200KB-800KB per cluster). With 10 clusters, total memory usage is under 10MB for models alone.
+
+- **Disk:** Training data is stored in SQLite. Size grows over time but is typically under 50MB even after months of usage.
+
+For comparison, Pulse uses far less resources than a typical browser tab or code editor.
+</Accordion>
+
+<Accordion title="What's the difference between Pulse and a cron job?">
+A **cron job** asks: *"Is it 3pm?"*
+
+**Pulse** asks: *"Does the current state of the world look like a state that has historically preceded something worth doing?"*
+
+Key differences:
+
+| Cron Job | Pulse |
+|----------|-------|
+| Fires at fixed times | Fires based on learned patterns |
+| Requires explicit scheduling | Learns from usage |
+| Same behavior forever | Improves over time |
+| No context about environment | Considers files, memory, time together |
+| Developer anticipates triggers | System discovers triggers |
+
+Pulse can complement cron jobs for known, scheduled events. But it excels at the long tail of events that are hard to schedule explicitly.
+</Accordion>
+
+<Accordion title="What models does Pulse use for Layer 2?">
+Layer 2 uses small **LSTM** (Long Short-Term Memory) or **TCN** (Temporal Convolutional Network) models. These are well-established architectures for time-series pattern recognition.
+
+Key characteristics:
+
+- 50,000-200,000 parameters per cluster model
+- 32-64 hidden units
+- Single sigmoid output (relevance score 0.0-1.0)
+- Under 5ms inference time on CPU
+- Trained with PyTorch
+
+**Why not transformers?** Transformers require fixed-size attention windows and are expensive for continuous inference. LSTMs and TCNs are designed for streaming time-series data, run efficiently on CPU, and handle variable-length sequences naturally.
+</Accordion>
+
+<Accordion title="Can I disable Pulse?">
+Yes. Pulse is a component of the Macroa platform, but it can be disabled if you prefer a purely reactive agent system.
+
+When Pulse is disabled:
+- Agents will only respond to explicit triggers (user messages, webhooks, cron jobs)
+- No background monitoring occurs
+- No cluster models are trained
+- All module fingerprints are ignored
+
+You can re-enable Pulse at any time, and it will resume monitoring from its last saved state.
+</Accordion>
+
+<Accordion title="What happens when multiple clusters fire at the same time?">
+When multiple cluster models produce relevance scores above their thresholds simultaneously, Pulse emits multiple `ScopedQuestion` objects—one per cluster.
+
+The kernel (the agent runtime component) receives these questions and can:
+
+1. **Queue them** and process sequentially
+2. **Prioritize** based on cluster confidence scores
+3. **Batch them** into a single agent activation with multiple focused questions
+
+The specific behavior depends on kernel configuration and agent preferences. This is part of the kernel specification, not the Pulse specification.
+</Accordion>
+
+<Accordion title="Can I see what Pulse is learning?">
+Yes. Pulse provides introspection through the Macroa shell (when built):
+
+- View recent signal events and which clusters fired
+- Inspect cluster model confidence scores over time
+- See the training examples that have been collected
+- Export model weights for analysis
+- Visualize activation patterns
+
+All data is stored locally in SQLite and can be queried directly if you prefer raw access.
+</Accordion>
+
+<Accordion title="Is Pulse production-ready?">
+No. Pulse is currently in **proof-of-concept / active development** stage.
+
+Current status:
+- Architecture specification is complete
+- Core concepts have been validated through design review
+- Implementation is in progress
+- Integration with the Macroa kernel is not yet complete
+
+Pulse is being built as the first component of the larger Macroa platform. It is **not recommended for production use** until the full integration testing is complete and the kernel is built.
+
+If you're interested in experimenting with Pulse, watch the [GitHub repository](https://github.com/aniolowie/Macroa-Pulse) for releases.
+</Accordion>
+
+<Accordion title="How can I contribute or provide feedback?">
+Macroa-Pulse is an open-source project under the AGPLv3 license. Contributions are welcome:
+
+**Best ways to contribute right now:**
+
+1. **Read the architecture documents** in the GitHub repository to understand the design
+2. **Provide feedback** on the design paper and architecture guide (open an issue)
+3. **Experiment** with the code once the proof of concept is released
+4. **Propose modules** that would benefit from proactive activation
+5. **Report bugs** or suggest improvements through GitHub issues
+
+For questions or discussions, open an issue in the [GitHub repository](https://github.com/aniolowie/Macroa-Pulse).
+</Accordion>
+
+## Still Have Questions?
+
+If your question isn't answered here, feel free to:
+
+- Open an issue on the [GitHub repository](https://github.com/aniolowie/Macroa-Pulse)
+- Read the detailed [design paper](/resources/design-paper)
+- Check the [architecture guide](/concepts/three-layer-architecture) for technical details
+
+<Card title="Join the Discussion" icon="github" href="https://github.com/aniolowie/Macroa-Pulse">
+  Visit the GitHub repository to ask questions and contribute
+</Card>

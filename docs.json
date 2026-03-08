@@ -1,58 +1,108 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "maple",
-  "name": "Macroa-Pulse",
+  "name": "Macroa Pulse",
+  "theme": "aspen",
   "colors": {
-    "primary": "#6366f1",
-    "light": "#818cf8",
-    "dark": "#4f46e5"
+    "primary": "#6366F1",
+    "light": "#818CF8",
+    "dark": "#4F46E5"
   },
-  "topbarLinks": [
-    {
-      "name": "GitHub",
-      "url": "https://github.com/aniolowie/Macroa-Pulse"
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/aniolowie/Macroa-Pulse"
     }
-  ],
-  "navigation": [
-    {
-      "group": "Overview",
-      "pages": [
-        "docs/introduction",
-        "docs/how-it-works",
-        "docs/architecture"
-      ]
-    },
-    {
-      "group": "Getting Started",
-      "pages": [
-        "docs/quickstart",
-        "docs/installation",
-        "docs/first-module"
-      ]
-    },
-    {
-      "group": "Concepts",
-      "pages": [
-        "docs/retina",
-        "docs/limbic",
-        "docs/prefrontal",
-        "docs/registry"
-      ]
-    },
-    {
-      "group": "Reference",
-      "pages": [
-        "docs/fingerprint-format",
-        "docs/cli-reference",
-        "docs/python-api"
-      ]
-    },
-    {
-      "group": "Contributing",
-      "pages": [
-        "docs/contributing",
-        "docs/roadmap"
-      ]
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/aniolowie/Macroa-Pulse"
     }
-  ]
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/overview",
+              "concepts/three-layer-architecture",
+              "concepts/signal-perception",
+              "concepts/proactive-vs-reactive"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/layer1-retina",
+              "architecture/layer2-limbic",
+              "architecture/layer3-prefrontal",
+              "architecture/signal-bus",
+              "architecture/module-fingerprints"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/registering-modules",
+              "guides/training-models",
+              "guides/monitoring-signals",
+              "guides/integration"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Core Classes",
+            "pages": [
+              "api/signal-event",
+              "api/module-fingerprint",
+              "api/pulse-registry",
+              "api/escalation-decision"
+            ]
+          },
+          {
+            "group": "Layers",
+            "pages": [
+              "api/retina",
+              "api/limbic",
+              "api/prefrontal"
+            ]
+          },
+          {
+            "group": "Utilities",
+            "pages": [
+              "api/signal-bus",
+              "api/training"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Resources",
+        "groups": [
+          {
+            "group": "Learn More",
+            "pages": [
+              "resources/design-paper",
+              "resources/macroa-platform",
+              "resources/faq"
+            ]
+          }
+        ]
+      }
+    ]
+  }
 }

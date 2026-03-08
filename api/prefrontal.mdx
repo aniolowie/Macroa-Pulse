@@ -1,0 +1,228 @@
+---
+title: PrefrontalLayer
+description: Layer 3 escalation gating and question formation
+---
+
+## Overview
+
+`PrefrontalLayer` is Layer 3 of the Pulse subsystem. It decides whether a high-scoring window from [LimbicLayer](/api/limbic) warrants waking the agent, and if so, what question to ask.
+
+**Invariant:** `should_escalate` is `True` only when `question` is a non-empty string.
+
+## Import
+
+```python
+from pulse.prefrontal import PrefrontalLayer, EscalationDecision
+```
+
+## Class Definition
+
+Defined in `pulse/prefrontal.py:26`.
+
+## Constructor
+
+```python
+def __init__(self, threshold: float = 0.65) -> None
+```
+
+<ParamField path="threshold" type="float" default="0.65">
+  Escalation threshold in range [0.0, 1.0]. Only scores meeting or exceeding this value can escalate.
+</ParamField>
+
+## Methods
+
+### evaluate
+
+```python
+def evaluate(
+    self,
+    module_id: str,
+    score: float,
+    window: list[SignalEvent],
+    fingerprint: ModuleFingerprint,
+) -> EscalationDecision
+```
+
+Gate the score and form the escalation question.
+
+Returns `should_escalate=False` if:
+- Score is below threshold
+- Question template is missing or empty
+- Template substitution produces an empty string
+- Template substitution raises any exception
+
+<ParamField path="module_id" type="str" required>
+  Unique identifier of the module being evaluated.
+</ParamField>
+
+<ParamField path="score" type="float" required>
+  Relevance score from LimbicLayer, in range [0.0, 1.0].
+</ParamField>
+
+<ParamField path="window" type="list[SignalEvent]" required>
+  The event window that was scored. Used to extract `location` for template substitution.
+</ParamField>
+
+<ParamField path="fingerprint" type="ModuleFingerprint" required>
+  The module's fingerprint containing the `question_template`.
+</ParamField>
+
+**Returns:**
+- [EscalationDecision](/api/escalation-decision): Decision object with `should_escalate`, `question`, and metadata.
+
+**Example:**
+
+```python
+from pulse.prefrontal import PrefrontalLayer
+from pulse.limbic import LimbicLayer
+from pulse.fingerprint import parse_fingerprint
+from pulse.retina import SignalEvent
+
+# Setup
+prefrontal = PrefrontalLayer(threshold=0.7)
+limbic = LimbicLayer()
+
+fingerprint_raw = {
+    "module_id": "homework_watcher",
+    "cluster": "homework",
+    "version": "1.0.0",
+    "question_template": "New homework file detected at {location}. Should I review it?",
+    "default_threshold": 0.7,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/Documents/Homework"],
+            "relevant_extensions": [".pdf"],
+            "irrelevant_extensions": [],
+        },
+    },
+}
+
+fingerprint = parse_fingerprint(fingerprint_raw)
+limbic.register("homework_watcher", fingerprint)
+
+# Evaluate an event
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/Documents/Homework/math.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1678123456.0,
+    features={"extension": ".pdf", "size_bytes": 524288, "directory_depth": 4, "filename_tokens": ["math"]},
+)
+
+score = limbic.score("homework_watcher", [event])
+decision = prefrontal.evaluate("homework_watcher", score, [event], fingerprint)
+
+if decision.should_escalate:
+    print(decision.question)
+    # Output: "New homework file detected at /home/user/Documents/Homework/math.pdf. Should I review it?"
+else:
+    print(f"Score {score:.2f} below threshold")
+```
+
+### set_threshold
+
+```python
+def set_threshold(self, t: float) -> None
+```
+
+Update the escalation threshold at runtime.
+
+<ParamField path="t" type="float" required>
+  New threshold value in range [0.0, 1.0].
+</ParamField>
+
+**Raises:**
+- `ValueError`: If `t` is not in [0.0, 1.0]
+
+**Example:**
+
+```python
+prefrontal = PrefrontalLayer(threshold=0.65)
+
+# Lower threshold to be more sensitive
+prefrontal.set_threshold(0.5)
+
+# Raise threshold to be more conservative
+prefrontal.set_threshold(0.8)
+```
+
+## Question Template Substitution
+
+The `question_template` from the module's fingerprint must contain a `{location}` placeholder. This is substituted with the `location` field from the last event in the window.
+
+**Valid templates:**
+- `"Should I check the new file at {location}?"`
+- `"File {location} was modified. Review it?"`
+- `"{location} detected. Take action?"`
+
+**Invalid templates:**
+- `"Should I check the new file?"` (missing `{location}`)
+- `"File at {path} changed"` (wrong placeholder name)
+
+## Gating Logic
+
+The full gating logic in `evaluate()` is:
+
+1. **Score check:** If `score < threshold`, return `should_escalate=False`
+2. **Template check:** If `question_template` is empty or whitespace-only, return `should_escalate=False`
+3. **Substitution attempt:** Try `template.format(location=window[-1].location)`
+   - On any exception (KeyError, ValueError, IndexError), return `should_escalate=False`
+4. **Empty check:** If substituted question is empty or whitespace-only, return `should_escalate=False`
+5. **Success:** Return `should_escalate=True` with the substituted question
+
+## Complete Example
+
+```python
+from pulse.prefrontal import PrefrontalLayer
+from pulse.retina import SignalEvent
+from pulse.fingerprint import parse_fingerprint
+
+# Create Prefrontal layer
+prefrontal = PrefrontalLayer(threshold=0.7)
+
+# Parse fingerprint
+fingerprint = parse_fingerprint({
+    "module_id": "code_watcher",
+    "cluster": "development",
+    "version": "1.0.0",
+    "question_template": "Python file {location} was modified. Should I run tests?",
+    "default_threshold": 0.7,
+    "signal_priors": {
+        "filesystem": {
+            "watch_directories": ["~/workspace"],
+            "relevant_extensions": [".py"],
+            "irrelevant_extensions": [".pyc"],
+        },
+    },
+})
+
+# Simulate event and score
+event = SignalEvent(
+    source="filesystem",
+    location="/home/user/workspace/main.py",
+    delta_type="modified",
+    magnitude=0.8,
+    timestamp=1678123456.0,
+    features={"extension": ".py", "size_bytes": 2048, "directory_depth": 3, "filename_tokens": ["main"]},
+)
+
+# High score (above threshold)
+decision = prefrontal.evaluate("code_watcher", 0.85, [event], fingerprint)
+assert decision.should_escalate is True
+assert decision.question == "Python file /home/user/workspace/main.py was modified. Should I run tests?"
+assert decision.confidence == 0.85
+
+# Low score (below threshold)
+decision = prefrontal.evaluate("code_watcher", 0.50, [event], fingerprint)
+assert decision.should_escalate is False
+assert decision.question is None
+assert decision.confidence == 0.50
+```
+
+## See Also
+
+- [EscalationDecision](/api/escalation-decision) — Output structure
+- [LimbicLayer](/api/limbic) — Produces scores consumed by Prefrontal
+- [ModuleFingerprint](/api/module-fingerprint) — Provides question_template
+- [PulseRegistry](/api/pulse-registry) — Coordinates Prefrontal with other layers

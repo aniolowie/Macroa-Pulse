@@ -1,0 +1,392 @@
+---
+title: Signal Perception
+description: How signals flow through Pulse's three-layer system
+---
+
+## What Are Signals?
+
+In Pulse, a **signal** is a structured representation of an environmental change. Signals are not raw data — they are **pre-processed observations** with standardized features that neural networks can interpret.
+
+Every signal originates as a real-world event:
+
+- A file appears in your Downloads folder
+- A fact is written to agent memory
+- The clock ticks to 9:00 AM on a Monday
+- A monitored webpage returns a different response
+
+Pulse transforms these heterogeneous events into a common representation: the `SignalEvent`.
+
+## The SignalEvent Structure
+
+Every signal, regardless of source, shares a common structure:
+
+```python
+@dataclass
+class SignalEvent:
+    source: str          # "filesystem" | "memory" | "time" | "network"
+    location: str        # path, namespace, or endpoint
+    delta_type: str      # "created" | "modified" | "deleted" | "tick"
+    magnitude: float     # 0.0–1.0, normalized change size
+    timestamp: float     # unix timestamp
+    features: dict       # source-specific features
+```
+
+This structure is **intentionally simple**. The Retina (Layer 1) emits signals. The Limbic Filter (Layer 2) consumes them. No interpretation, no reasoning — just structured observations.
+
+## Signal Sources
+
+### File System Signals
+
+Triggered by file creation, modification, or deletion in watched directories.
+
+**Example:**
+```python
+SignalEvent(
+    source="filesystem",
+    location="/home/user/Downloads/assignment2.pdf",
+    delta_type="created",
+    magnitude=1.0,  # creation always has magnitude 1.0
+    timestamp=1709856234.5,
+    features={
+        "path": "/home/user/Downloads/assignment2.pdf",
+        "extension": ".pdf",
+        "size_bytes": 1048576,
+        "directory_depth": 3,
+        "filename_tokens": ["assignment2"]
+    }
+)
+```
+
+**Features explained:**
+- `extension`: Used to match against module fingerprint's `relevant_extensions`
+- `size_bytes`: Normalized logarithmically (small files vs. large files)
+- `directory_depth`: How many levels deep (shallow vs. deep paths)
+- `filename_tokens`: Alphanumeric tokens split from filename for pattern matching
+
+<Info>
+The Retina only watches directories declared in module fingerprints. It does **not** watch your entire filesystem.
+</Info>
+
+### Memory Signals
+
+Triggered when facts are written or updated in monitored memory namespaces.
+
+**Example:**
+```python
+SignalEvent(
+    source="memory",
+    location="/mem/homework/last_checked",
+    delta_type="modified",
+    magnitude=0.5,  # proportional to value change size
+    timestamp=1709856240.0,
+    features={
+        "namespace": "/mem/homework/",
+        "key": "last_checked",
+        "value_length": 19  # length of stored value
+    }
+)
+```
+
+Memory signals allow modules to react to their own state changes. For example, a homework agent might watch `/mem/homework/due_dates` and fire when a new deadline is added.
+
+### Time Signals
+
+Triggered every 60 seconds by the Retina's internal heartbeat.
+
+**Example:**
+```python
+SignalEvent(
+    source="time",
+    location="tick",
+    delta_type="tick",
+    magnitude=1.0,
+    timestamp=1709856300.0,
+    features={
+        "hour_sin": 0.866,   # sin(2π * 14 / 24) for 2:00 PM
+        "hour_cos": 0.5,
+        "dow_sin": 0.0,      # sin(2π * 0 / 7) for Monday
+        "dow_cos": 1.0,
+        "minutes_since_last_activation": 847
+    }
+)
+```
+
+<Note>
+**Why sine/cosine encoding for time?**
+
+Time is circular: 23:00 and 01:00 are close, not far apart. In linear encoding, 23 and 1 appear distant. In cyclical encoding:
+
+- `hour_sin(23:00) = -0.259`, `hour_sin(01:00) = 0.259` (close)
+- `hour_cos(23:00) = 0.966`, `hour_cos(01:00) = 0.966` (nearly identical)
+
+This allows neural networks to correctly learn patterns that span midnight or Sunday→Monday transitions.
+</Note>
+
+Time signals enable temporal pattern learning:
+
+- Homework tends to appear between 8pm–11pm on weekdays
+- Calendar events are usually added on Sunday evenings
+- Email sweeps happen every morning around 9am
+
+### Network Signals (Future)
+
+Triggered when a monitored HTTP endpoint returns a different response hash.
+
+**Example (v2):**
+```python
+SignalEvent(
+    source="network",
+    location="https://courses.university.edu/assignments",
+    delta_type="modified",
+    magnitude=0.8,  # proportional to hash difference
+    timestamp=1709856400.0,
+    features={
+        "endpoint": "https://courses.university.edu/assignments",
+        "status_code": 200,
+        "content_hash": "7a3f9e4b",
+        "previous_hash": "6f2d8c1a"
+    }
+)
+```
+
+Network signals will allow modules to monitor external resources without polling the LLM.
+
+## Feature Vectors
+
+The Limbic Filter (Layer 2) doesn't consume `SignalEvent` objects directly. It consumes **feature vectors** — fixed-length numeric arrays that neural networks can process.
+
+Each `SignalEvent` is converted to a 16-dimensional vector:
+
+```python
+[
+    magnitude,              # [0]
+    delta_type_encoded,     # [1] created=1.0, modified=0.5, deleted=0.0, tick=0.75
+    source_encoded,         # [2] filesystem=1.0, time=0.5, memory=0.25
+    hour_sin,               # [3] time signals only
+    hour_cos,               # [4]
+    dow_sin,                # [5]
+    dow_cos,                # [6]
+    minutes_since_last,     # [7]
+    normalized_size,        # [8] filesystem signals only
+    directory_depth_norm,   # [9]
+    extension_hash,         # [10] CRC32 hash % 1000 / 1000
+    reserved,               # [11-15] for future features
+]
+```
+
+This standardized representation allows a single LSTM architecture to process all signal types.
+
+## Signal Flow: A Complete Example
+
+Let's trace a signal from environment to agent activation.
+
+### 1. Environment Change
+
+```
+User downloads file: /home/user/Downloads/hw3.pdf
+File system: inotify event fires
+```
+
+### 2. Retina Detection (Layer 1)
+
+The watchdog library detects the event. The Retina emits:
+
+```python
+SignalEvent(
+    source="filesystem",
+    location="/home/user/Downloads/hw3.pdf",
+    delta_type="created",
+    magnitude=1.0,
+    timestamp=1709856234.5,
+    features={
+        "extension": ".pdf",
+        "size_bytes": 204800,
+        "directory_depth": 3,
+        "filename_tokens": ["hw3"]
+    }
+)
+```
+
+This event is placed on a **thread-safe queue** for Layer 2.
+
+### 3. Limbic Scoring (Layer 2)
+
+The Limbic Filter consumes the event. For each registered module, it:
+
+1. Adds the event to that module's **sliding window** (last 10 events)
+2. Converts the window to a batch of feature vectors: `(1, 10, 16)`
+3. Passes the batch through the module's LSTM
+4. Gets a relevance score: `0.78`
+
+For the `homework-agent` module:
+
+```python
+RelevanceScore(
+    module_id="homework-agent",
+    score=0.78,  # above threshold of 0.65
+    triggering_events=[SignalEvent(...)],
+    timestamp=1709856234.5
+)
+```
+
+<Info>
+Why a window of events, not a single event?
+
+Patterns emerge from **sequences**, not individual points. A single `.pdf` file might be noise. But a `.pdf` file appearing after a time tick on a weekday evening followed by a memory update to `/mem/homework/` is a strong signal.
+</Info>
+
+### 4. Prefrontal Question Formation (Layer 3)
+
+The Prefrontal Filter receives the relevance score. It:
+
+1. Checks score against threshold: `0.78 > 0.65` ✓
+2. Retrieves the module's question template from fingerprint
+3. Interpolates the template with signal details:
+
+```python
+template = "A new file appeared at {location}. Is this file related to a course assignment or homework?"
+location = "/home/user/Downloads/hw3.pdf"
+
+question = "A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?"
+```
+
+4. Emits a `ScopedQuestion`:
+
+```python
+ScopedQuestion(
+    question="A new file appeared at /home/user/Downloads/hw3.pdf. Is this file related to a course assignment or homework?",
+    module_id="homework-agent",
+    triggering_events=[SignalEvent(...)],
+    confidence=0.78,
+    timestamp=1709856234.5
+)
+```
+
+### 5. Kernel Escalation
+
+The `ScopedQuestion` is placed on the **kernel signal bus**. The kernel:
+
+1. Wakes the agent with the specific question
+2. Provides the question as context
+3. Waits for the agent to respond
+
+### 6. Agent Response
+
+The agent receives:
+
+```
+Question: "A new file appeared at /home/user/Downloads/hw3.pdf. 
+           Is this file related to a course assignment or homework?"
+
+Context: {
+    "file_path": "/home/user/Downloads/hw3.pdf",
+    "confidence": 0.78,
+    "module": "homework-agent"
+}
+```
+
+The agent:
+
+1. Opens the PDF
+2. Checks for course-related keywords
+3. Finds "CS 242 Assignment 3"
+4. Writes to memory: `/mem/homework/assignments/cs242_hw3`
+5. Moves file to `~/Documents/Courses/CS242/`
+
+### 7. Feedback Loop
+
+The kernel observes that the agent **took action** (wrote to memory, moved file). This is an **implicit positive label**.
+
+The Limbic Filter performs online learning:
+
+```python
+limbic.update_weights(
+    module_id="homework-agent",
+    window=[...],  # the 10 events that led to this activation
+    label=1.0      # positive: the activation was useful
+)
+```
+
+The LSTM weights update slightly. Next time a similar pattern occurs (`.pdf` file in Downloads on a weekday evening), the model will score it even higher.
+
+## Signal Windows and Temporal Context
+
+The Limbic Filter doesn't score individual signals. It scores **windows** of recent signals.
+
+Default window size: **10 events**
+
+This temporal context allows pattern recognition:
+
+<CardGroup cols={2}>
+  <Card title="Single Event">
+    ❌ `.pdf` file created
+    
+    Could be anything. Ambiguous.
+  </Card>
+  
+  <Card title="Event Sequence">
+    ✓ Time tick (9pm, Monday)  
+    ✓ Memory update (`/mem/courses/`)  
+    ✓ `.pdf` file created (Downloads)  
+    ✓ Filename contains digits ("hw3")
+    
+    Strong homework signal.
+  </Card>
+</CardGroup>
+
+The LSTM architecture is specifically designed for this task. It:
+
+- Maintains hidden state across the sequence
+- Learns which event combinations are meaningful
+- Outputs a single score representing the entire pattern
+
+## Signal Sparsity
+
+Not every environmental change becomes a signal. The Retina is **selective**:
+
+- Only watched directories generate filesystem signals
+- Only watched namespaces generate memory signals
+- Time ticks are regular (every 60 seconds) but rare relative to filesystem noise
+
+This sparsity is intentional. Pulse is not trying to see everything — it's trying to see **patterns in relevant changes**.
+
+On a typical day:
+
+- **Filesystem events**: 10–50 (only in watched dirs)
+- **Memory events**: 5–20 (only in watched namespaces)
+- **Time ticks**: 1,440 (60 seconds × 24 hours)
+- **Total signals**: ~1,500–2,000
+
+Of these, only a tiny fraction (1–10) score above the Limbic threshold and reach Layer 3.
+
+## Learning from Signals
+
+Every agent activation provides a training signal. The Limbic Filter learns:
+
+- **Positive patterns**: Windows that preceded useful activations
+- **Negative patterns**: Windows that preceded useless activations (agent did nothing)
+
+Over time, the models learn:
+
+- Time patterns ("homework appears on weekday evenings")
+- File patterns ("`.docx` files in Documents are usually relevant")
+- Sequence patterns ("a calendar update followed by an email signal usually means something")
+- Personal patterns ("I tend to check homework at 9pm, not 9am")
+
+<Tip>
+Pulse doesn't learn what "homework" means semantically. It learns that certain numerical patterns in signal features correlate with useful activations.
+
+This is why it's cheap: pattern recognition, not semantic understanding.
+</Tip>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Three-Layer Architecture" icon="layer-group" href="/concepts/three-layer-architecture">
+    Understand how each layer processes signals
+  </Card>
+  
+  <Card title="Module Fingerprints" icon="fingerprint" href="/architecture/module-fingerprints">
+    Define what signals your module cares about
+  </Card>
+</CardGroup>

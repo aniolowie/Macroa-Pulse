@@ -1,0 +1,125 @@
+---
+title: Installation
+description: Install Macroa Pulse and set up your development environment
+---
+
+Macroa Pulse is a Python library for proactive AI agent cognition. It runs entirely on local compute with zero LLM API calls in normal operation.
+
+## Requirements
+
+<Note>
+  Macroa Pulse requires **Python 3.11 or higher**. The library uses PyTorch for neural network inference and runs efficiently on CPU.
+</Note>
+
+## Installation Methods
+
+<Steps>
+  <Step title="Install with pip">
+    Install the latest version from PyPI:
+
+    ```bash
+    pip install macroa-pulse
+    ```
+
+    This will install Macroa Pulse along with its core dependencies:
+    - `torch>=2.0` - PyTorch for LSTM/TCN models
+    - `watchdog>=3.0` - Filesystem event detection
+    - `numpy>=1.24` - Feature vector construction
+  </Step>
+
+  <Step title="Verify installation">
+    Verify that Macroa Pulse is installed correctly:
+
+    ```python
+    from pulse import PulseRegistry, EscalationDecision, ModuleFingerprint
+
+    print("Macroa Pulse installed successfully!")
+    ```
+  </Step>
+</Steps>
+
+### Alternative: Poetry
+
+If you use Poetry for dependency management:
+
+```bash
+poetry add macroa-pulse
+```
+
+### Alternative: Pipenv
+
+If you use Pipenv:
+
+```bash
+pipenv install macroa-pulse
+```
+
+## Development Installation
+
+If you want to contribute to Macroa Pulse or run the test suite, install the development dependencies:
+
+<CodeGroup>
+```bash pip
+pip install macroa-pulse[dev]
+```
+
+```bash poetry
+poetry add macroa-pulse --with dev
+```
+
+```bash pipenv
+pipenv install macroa-pulse[dev]
+```
+</CodeGroup>
+
+This installs additional packages:
+- `pytest>=7.0` - Testing framework
+- `pytest-asyncio>=0.21` - Async testing support
+
+## System Requirements
+
+<Note>
+  Macroa Pulse runs entirely on **local compute**. No external services, network requests, or API keys are required.
+</Note>
+
+### Operating Systems
+
+- **Linux** - Full support with `inotify` for filesystem events
+- **macOS** - Full support with FSEvents
+- **Windows** - Full support with ReadDirectoryChangesW
+
+### Hardware
+
+- **CPU**: Any modern CPU (no GPU required)
+- **RAM**: Minimal footprint - cluster models are ~50K-200K parameters each
+- **Disk**: ~10MB for the library, additional space for training data storage
+
+### Filesystem Watching
+
+Macroa Pulse uses the `watchdog` library for filesystem event detection. This provides cross-platform support with native OS event APIs:
+
+- Linux: `inotify`
+- macOS: FSEvents
+- Windows: ReadDirectoryChangesW
+
+<Warning>
+  Watching very large directory trees (>10,000 files) may impact performance on some systems. Configure `watch_directories` in your module fingerprints to monitor only relevant paths.
+</Warning>
+
+## Data Storage
+
+Macroa Pulse stores training data and model weights locally:
+
+```text
+~/.macroa/pulse/
+├── training_data.db    # SQLite database for training examples
+└── models/             # PyTorch .pt files for cluster models
+```
+
+<Tip>
+  All data stays on your machine. Macroa Pulse never sends data to external services.
+</Tip>
+
+## Next Steps
+
+Now that you have Macroa Pulse installed, proceed to the [Quickstart](/quickstart) guide to create your first proactive agent.
